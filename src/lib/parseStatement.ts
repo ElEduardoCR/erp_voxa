@@ -106,6 +106,83 @@ Responde ÚNICAMENTE con JSON válido (sin texto adicional ni markdown), con est
 }
 Omite las llaves de resumen que no encuentres.`;
 
+// Quita ```json … ``` y separadores de miles dentro de números ("amount": 3,224.29 → 3224.29)
+function preclean(text: string): string {
+    let t = text.trim();
+    t = t.replace(/^```(?:json)?/i, '').replace(/```$/i, '').trim();
+    // Solo quita comas dentro de un número que sigue a ":" (valor numérico agrupado)
+    t = t.replace(/:\s*-?\d{1,3}(?:,\d{3})+(?:\.\d+)?/g, (m) => m.replace(/,/g, ''));
+    return t;
+}
+
+// Devuelve el primer objeto JSON balanceado a partir de "{", o null si quedó truncado
+function extractBalanced(text: string): string | null {
+    const start = text.indexOf('{');
+    if (start < 0) return null;
+    let depth = 0, inStr = false, esc = false;
+    for (let i = start; i < text.length; i++) {
+        const ch = text[i];
+        if (inStr) {
+            if (esc) esc = false;
+            else if (ch === '\\') esc = true;
+            else if (ch === '"') inStr = false;
+        } else if (ch === '"') inStr = true;
+        else if (ch === '{') depth++;
+        else if (ch === '}') { depth--; if (depth === 0) return text.slice(start, i + 1); }
+    }
+    return null; // nunca cerró → respuesta truncada
+}
+
+// Rescata el resumen + los movimientos COMPLETOS aunque la respuesta se haya cortado
+function salvageTruncated(text: string): string | null {
+    const start = text.indexOf('{');
+    const txKey = text.indexOf('"transactions"');
+    if (start < 0 || txKey < 0) return null;
+    const arrStart = text.indexOf('[', txKey);
+    if (arrStart < 0) return null;
+
+    const objs: string[] = [];
+    let depth = 0, inStr = false, esc = false, objStart = -1;
+    for (let i = arrStart + 1; i < text.length; i++) {
+        const ch = text[i];
+        if (inStr) {
+            if (esc) esc = false;
+            else if (ch === '\\') esc = true;
+            else if (ch === '"') inStr = false;
+            continue;
+        }
+        if (ch === '"') { inStr = true; continue; }
+        if (ch === '{') { if (depth === 0) objStart = i; depth++; }
+        else if (ch === '}') { depth--; if (depth === 0 && objStart >= 0) { objs.push(text.slice(objStart, i + 1)); objStart = -1; } }
+    }
+
+    let head = text.slice(start, txKey).trim();   // { "bank":..., ...,
+    if (!head.endsWith('{') && !head.endsWith(',')) head += ',';
+    return `${head}"transactions":[${objs.join(',')}]}`;
+}
+
+function coerceStatementJson(raw: string, truncated: boolean): ParsedStatement {
+    const text = preclean(raw);
+
+    // 1) Intento normal (objeto balanceado)
+    const balanced = extractBalanced(text);
+    if (balanced) {
+        try { return JSON.parse(balanced) as ParsedStatement; } catch { /* sigue a rescate */ }
+    }
+
+    // 2) Rescate de respuesta truncada (conserva los movimientos completos)
+    const salvaged = salvageTruncated(text);
+    if (salvaged) {
+        try { return JSON.parse(salvaged) as ParsedStatement; } catch { /* cae al error */ }
+    }
+
+    throw new Error(
+        truncated
+            ? 'El estado de cuenta tiene demasiados movimientos y la respuesta de la IA se truncó. Intenta de nuevo.'
+            : 'La IA devolvió un JSON inválido.'
+    );
+}
+
 export async function parseStatement(pdfBase64: string): Promise<ParsedStatement> {
     const apiKey = process.env.ANTHROPIC_API_KEY;
     if (!apiKey) throw new Error('ANTHROPIC_API_KEY no está definida');
@@ -119,13 +196,13 @@ export async function parseStatement(pdfBase64: string): Promise<ParsedStatement
         },
         body: JSON.stringify({
             model: MODEL,
-            max_tokens: 8000,
+            max_tokens: 16000,
             system: SYSTEM,
             messages: [{
                 role: 'user',
                 content: [
                     { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: pdfBase64 } },
-                    { type: 'text', text: 'Extrae el resumen y todos los movimientos clasificados de este estado de cuenta. Devuelve solo el JSON.' },
+                    { type: 'text', text: 'Extrae el resumen y todos los movimientos clasificados de este estado de cuenta. Devuelve solo el JSON, sin separador de miles en los números (usa 3224.29, no 3,224.29).' },
                 ],
             }],
         }),
@@ -137,16 +214,10 @@ export async function parseStatement(pdfBase64: string): Promise<ParsedStatement
     }
 
     const data = await res.json();
-    const text = data.content?.[0]?.text || '';
-    const jsonMatch = text.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) throw new Error('La IA no devolvió JSON analizable.');
+    const text: string = data.content?.[0]?.text || '';
+    const truncated = data.stop_reason === 'max_tokens';
 
-    let parsed: ParsedStatement;
-    try {
-        parsed = JSON.parse(jsonMatch[0]) as ParsedStatement;
-    } catch {
-        throw new Error('La IA devolvió un JSON inválido.');
-    }
+    const parsed = coerceStatementJson(text, truncated);
     if (!Array.isArray(parsed.transactions)) parsed.transactions = [];
 
     // Normaliza montos a positivos y recalcula totales si faltan
