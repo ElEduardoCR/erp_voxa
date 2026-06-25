@@ -109,6 +109,8 @@ export default function FinancePage() {
     // Subida
     const [uploadAccountId, setUploadAccountId] = useState("");
     const [processing, setProcessing] = useState(false);
+    const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
+    const [results, setResults] = useState<{ name: string; ok: boolean; text: string }[]>([]);
     const fileRef = useRef<HTMLInputElement>(null);
 
     // Modales
@@ -237,37 +239,57 @@ export default function FinancePage() {
     }, [txs]);
 
     // ===== Acciones =====
-    const handleStatementUpload = async (file: File | null) => {
-        if (!file) return;
-        if (!uploadAccountId) { setMsg({ type: "error", text: "Primero elige la tarjeta a la que pertenece este estado de cuenta." }); return; }
-        if (!file.name.toLowerCase().endsWith(".pdf")) { setMsg({ type: "error", text: "Sube un archivo PDF." }); return; }
+    const handleStatementsUpload = async (fileList: FileList | null) => {
+        if (!fileList || fileList.length === 0) return;
+        const pdfs = Array.from(fileList).filter(f => f.name.toLowerCase().endsWith(".pdf"));
+        if (pdfs.length === 0) { setMsg({ type: "error", text: "Selecciona archivos PDF." }); return; }
 
         setProcessing(true);
-        setMsg({ type: "info", text: `Subiendo y analizando "${file.name}" con la IA…` });
-        try {
-            const path = `${PREFIX}/${uploadAccountId}/${Date.now()}_${file.name.replace(/[^\w.\-]/g, "_")}`;
-            const { error: upErr } = await supabase.storage.from(BUCKET).upload(path, file, { upsert: true, contentType: "application/pdf" });
-            if (upErr) throw upErr;
-            const fileUrl = supabase.storage.from(BUCKET).getPublicUrl(path).data.publicUrl;
+        setResults([]);
+        setProgress({ done: 0, total: pdfs.length });
+        setMsg({ type: "info", text: `Analizando ${pdfs.length} estado(s) de cuenta con la IA…` });
 
-            const res = await fetch("/api/finance/parse-statement", {
-                method: "POST",
-                headers: { "content-type": "application/json" },
-                body: JSON.stringify({ fileUrl, fileName: file.name, accountId: uploadAccountId }),
-            });
-            const json = await res.json();
-            if (!res.ok || !json.ok) throw new Error(json.error || `HTTP ${res.status}`);
-            const s = json.summary;
-            setMsg({
-                type: "success",
-                text: `Listo: ${s.transactions} movimiento(s). ${s.new_balance != null ? `Saldo: ${fmtMoney(s.new_balance)}. ` : ""}${s.due_date ? `Pago límite: ${fmtDate(s.due_date)}.` : ""}`,
-            });
-            await fetchAll();
-        } catch (e: any) {
-            setMsg({ type: "error", text: `Falló el análisis: ${e.message}` });
-        } finally {
-            setProcessing(false);
+        const out: { name: string; ok: boolean; text: string }[] = [];
+        for (let i = 0; i < pdfs.length; i++) {
+            const file = pdfs[i];
+            try {
+                const folder = uploadAccountId || "auto";
+                const path = `${PREFIX}/${folder}/${Date.now()}_${i}_${file.name.replace(/[^\w.\-]/g, "_")}`;
+                const { error: upErr } = await supabase.storage.from(BUCKET).upload(path, file, { upsert: true, contentType: "application/pdf" });
+                if (upErr) throw upErr;
+                const fileUrl = supabase.storage.from(BUCKET).getPublicUrl(path).data.publicUrl;
+
+                const res = await fetch("/api/finance/parse-statement", {
+                    method: "POST",
+                    headers: { "content-type": "application/json" },
+                    body: JSON.stringify({ fileUrl, fileName: file.name, accountId: uploadAccountId || null }),
+                });
+                const json = await res.json();
+                if (!res.ok || !json.ok) throw new Error(json.error || `HTTP ${res.status}`);
+                const s = json.summary;
+                const parts = [
+                    s.account_name || "Tarjeta",
+                    `${s.transactions} mov.`,
+                    s.new_balance != null ? `saldo ${fmtMoney(s.new_balance)}` : null,
+                    s.due_date ? `pago ${fmtDate(s.due_date)}` : null,
+                    s.account_created ? "🆕 tarjeta nueva" : null,
+                ].filter(Boolean);
+                out.push({ name: file.name, ok: true, text: parts.join(" · ") });
+            } catch (e: any) {
+                out.push({ name: file.name, ok: false, text: e.message });
+            }
+            setProgress({ done: i + 1, total: pdfs.length });
+            setResults([...out]);
         }
+
+        setProcessing(false);
+        setProgress(null);
+        const okCount = out.filter(r => r.ok).length;
+        setMsg({
+            type: okCount === pdfs.length ? "success" : okCount === 0 ? "error" : "info",
+            text: `Listo: ${okCount}/${pdfs.length} estado(s) de cuenta analizado(s).`,
+        });
+        await fetchAll();
     };
 
     const deleteAccount = async (id: string) => {
@@ -356,32 +378,61 @@ export default function FinancePage() {
                         <div className="flex items-start gap-3">
                             <div className="bg-emerald-500/10 p-2.5 rounded-xl border border-emerald-500/20"><UploadCloud className="w-5 h-5 text-emerald-400" /></div>
                             <div>
-                                <h3 className="text-base font-semibold text-white">Subir estado de cuenta (PDF)</h3>
-                                <p className="text-slate-400 text-sm mt-0.5 max-w-xl">Elige la tarjeta y sube el PDF del periodo. La IA lee fechas de corte y pago, saldos y clasifica cada movimiento.</p>
+                                <h3 className="text-base font-semibold text-white">Subir estados de cuenta (PDF)</h3>
+                                <p className="text-slate-400 text-sm mt-0.5 max-w-xl">Sube uno o varios PDF a la vez. Si dejas la tarjeta en "Detectar", la IA identifica a qué tarjeta pertenece cada uno por su banco y últimos 4 (y la crea si no existe).</p>
                             </div>
                         </div>
                         <div className="flex flex-col sm:flex-row gap-3 sm:items-center">
                             <select
                                 value={uploadAccountId}
                                 onChange={(e) => setUploadAccountId(e.target.value)}
-                                className="bg-slate-900/60 border border-slate-700/50 rounded-xl px-4 py-2.5 text-sm text-slate-200 focus:outline-none focus:border-emerald-500/50 min-w-[200px]"
+                                disabled={processing}
+                                className="bg-slate-900/60 border border-slate-700/50 rounded-xl px-4 py-2.5 text-sm text-slate-200 focus:outline-none focus:border-emerald-500/50 min-w-[200px] disabled:opacity-50"
                             >
-                                <option value="">— Elige tarjeta —</option>
+                                <option value="">🔎 Detectar tarjeta automáticamente</option>
                                 {accounts.map(a => <option key={a.id} value={a.id}>{a.name}{a.last4 ? ` ••${a.last4}` : ""}</option>)}
                             </select>
                             <button
                                 onClick={() => fileRef.current?.click()}
-                                disabled={processing || !uploadAccountId}
+                                disabled={processing}
                                 className="inline-flex items-center justify-center gap-2 bg-emerald-500 hover:bg-emerald-600 text-white px-5 py-2.5 rounded-xl font-medium text-sm transition-all disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap"
                             >
-                                {processing ? <><RefreshCw className="w-4 h-4 animate-spin" /> Analizando…</> : <><FileText className="w-4 h-4" /> Elegir PDF</>}
+                                {processing ? <><RefreshCw className="w-4 h-4 animate-spin" /> Analizando…</> : <><FileText className="w-4 h-4" /> Elegir PDFs</>}
                             </button>
-                            <button onClick={() => setShowAccount(true)} className="inline-flex items-center justify-center gap-2 bg-slate-800 hover:bg-slate-700 text-slate-200 px-4 py-2.5 rounded-xl font-medium text-sm border border-slate-700 whitespace-nowrap">
+                            <button onClick={() => setShowAccount(true)} disabled={processing} className="inline-flex items-center justify-center gap-2 bg-slate-800 hover:bg-slate-700 text-slate-200 px-4 py-2.5 rounded-xl font-medium text-sm border border-slate-700 whitespace-nowrap disabled:opacity-50">
                                 <Plus className="w-4 h-4 text-emerald-400" /> Nueva tarjeta
                             </button>
-                            <input ref={fileRef} type="file" accept=".pdf,application/pdf" className="hidden" onChange={(e) => { handleStatementUpload(e.target.files?.[0] || null); e.target.value = ""; }} />
+                            <input ref={fileRef} type="file" accept=".pdf,application/pdf" multiple className="hidden" onChange={(e) => { handleStatementsUpload(e.target.files); e.target.value = ""; }} />
                         </div>
                     </div>
+
+                    {/* Progreso */}
+                    {progress && (
+                        <div className="mt-5">
+                            <div className="flex items-center justify-between text-sm text-slate-400 mb-2">
+                                <span className="flex items-center gap-2"><RefreshCw className="w-4 h-4 animate-spin text-emerald-400" /> Analizando estados de cuenta…</span>
+                                <span className="font-medium text-slate-200">{progress.done} / {progress.total}</span>
+                            </div>
+                            <div className="h-2.5 bg-slate-900/60 rounded-full overflow-hidden">
+                                <div className="h-full bg-gradient-to-r from-emerald-500 to-teal-500 transition-all duration-300" style={{ width: `${progress.total ? (progress.done / progress.total) * 100 : 0}%` }} />
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Resultados por archivo */}
+                    {results.length > 0 && (
+                        <div className="mt-5 space-y-2">
+                            {results.map((r, i) => (
+                                <div key={i} className={cn("flex items-start gap-2 text-sm rounded-lg px-3 py-2 border", r.ok ? "bg-emerald-500/5 border-emerald-500/20" : "bg-red-500/5 border-red-500/20")}>
+                                    {r.ok ? <CheckCircle className="w-4 h-4 text-emerald-400 mt-0.5 flex-shrink-0" /> : <AlertCircle className="w-4 h-4 text-red-400 mt-0.5 flex-shrink-0" />}
+                                    <div className="min-w-0">
+                                        <p className="text-slate-300 truncate">{r.name}</p>
+                                        <p className={cn("text-xs", r.ok ? "text-slate-400" : "text-red-300")}>{r.text}</p>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    )}
 
                     {/* Tarjetas registradas */}
                     {accounts.length > 0 && (
