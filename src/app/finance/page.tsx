@@ -5,7 +5,7 @@ import { supabase } from "@/lib/supabase";
 import {
     ArrowLeft, RefreshCw, HeartPulse, CreditCard, Wallet, Landmark, Plus, X,
     UploadCloud, FileText, AlertCircle, CheckCircle, CalendarClock, TrendingUp,
-    TrendingDown, Trash2, PiggyBank, Tags, Search,
+    TrendingDown, Trash2, PiggyBank, Tags, Search, Copy,
 } from "lucide-react";
 import Link from "next/link";
 import clsx from "clsx";
@@ -110,7 +110,7 @@ export default function FinancePage() {
     const [uploadAccountId, setUploadAccountId] = useState("");
     const [processing, setProcessing] = useState(false);
     const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
-    const [results, setResults] = useState<{ name: string; ok: boolean; text: string }[]>([]);
+    const [results, setResults] = useState<{ name: string; ok: boolean; dup?: boolean; text: string }[]>([]);
     const fileRef = useRef<HTMLInputElement>(null);
 
     // Modales
@@ -249,7 +249,7 @@ export default function FinancePage() {
         setProgress({ done: 0, total: pdfs.length });
         setMsg({ type: "info", text: `Analizando ${pdfs.length} estado(s) de cuenta con la IA…` });
 
-        const out: { name: string; ok: boolean; text: string }[] = [];
+        const out: { name: string; ok: boolean; dup?: boolean; text: string }[] = [];
         for (let i = 0; i < pdfs.length; i++) {
             const file = pdfs[i];
             try {
@@ -266,15 +266,20 @@ export default function FinancePage() {
                 });
                 const json = await res.json();
                 if (!res.ok || !json.ok) throw new Error(json.error || `HTTP ${res.status}`);
-                const s = json.summary;
-                const parts = [
-                    s.account_name || "Tarjeta",
-                    `${s.transactions} mov.`,
-                    s.new_balance != null ? `saldo ${fmtMoney(s.new_balance)}` : null,
-                    s.due_date ? `pago ${fmtDate(s.due_date)}` : null,
-                    s.account_created ? "🆕 tarjeta nueva" : null,
-                ].filter(Boolean);
-                out.push({ name: file.name, ok: true, text: parts.join(" · ") });
+                const s = json.summary || {};
+                if (json.duplicate) {
+                    const motivo = json.reason === "file" ? "archivo idéntico" : "mismo corte ya cargado";
+                    out.push({ name: file.name, ok: true, dup: true, text: `Duplicado (${motivo}) — se omitió${s.account_name ? ` · ${s.account_name}` : ""}` });
+                } else {
+                    const parts = [
+                        s.account_name || "Tarjeta",
+                        `${s.transactions} mov.`,
+                        s.new_balance != null ? `saldo ${fmtMoney(s.new_balance)}` : null,
+                        s.due_date ? `pago ${fmtDate(s.due_date)}` : null,
+                        s.account_created ? "🆕 tarjeta nueva" : null,
+                    ].filter(Boolean);
+                    out.push({ name: file.name, ok: true, text: parts.join(" · ") });
+                }
             } catch (e: any) {
                 out.push({ name: file.name, ok: false, text: e.message });
             }
@@ -284,10 +289,12 @@ export default function FinancePage() {
 
         setProcessing(false);
         setProgress(null);
-        const okCount = out.filter(r => r.ok).length;
+        const okCount = out.filter(r => r.ok && !r.dup).length;
+        const dupCount = out.filter(r => r.dup).length;
+        const errCount = out.filter(r => !r.ok).length;
         setMsg({
-            type: okCount === pdfs.length ? "success" : okCount === 0 ? "error" : "info",
-            text: `Listo: ${okCount}/${pdfs.length} estado(s) de cuenta analizado(s).`,
+            type: errCount > 0 ? "error" : dupCount > 0 ? "info" : "success",
+            text: `Listo: ${okCount} analizado(s)${dupCount ? `, ${dupCount} duplicado(s) omitido(s)` : ""}${errCount ? `, ${errCount} con error` : ""} (de ${pdfs.length}).`,
         });
         await fetchAll();
     };
@@ -423,11 +430,14 @@ export default function FinancePage() {
                     {results.length > 0 && (
                         <div className="mt-5 space-y-2">
                             {results.map((r, i) => (
-                                <div key={i} className={cn("flex items-start gap-2 text-sm rounded-lg px-3 py-2 border", r.ok ? "bg-emerald-500/5 border-emerald-500/20" : "bg-red-500/5 border-red-500/20")}>
-                                    {r.ok ? <CheckCircle className="w-4 h-4 text-emerald-400 mt-0.5 flex-shrink-0" /> : <AlertCircle className="w-4 h-4 text-red-400 mt-0.5 flex-shrink-0" />}
+                                <div key={i} className={cn(
+                                    "flex items-start gap-2 text-sm rounded-lg px-3 py-2 border",
+                                    r.dup ? "bg-amber-500/5 border-amber-500/20" : r.ok ? "bg-emerald-500/5 border-emerald-500/20" : "bg-red-500/5 border-red-500/20"
+                                )}>
+                                    {r.dup ? <Copy className="w-4 h-4 text-amber-400 mt-0.5 flex-shrink-0" /> : r.ok ? <CheckCircle className="w-4 h-4 text-emerald-400 mt-0.5 flex-shrink-0" /> : <AlertCircle className="w-4 h-4 text-red-400 mt-0.5 flex-shrink-0" />}
                                     <div className="min-w-0">
                                         <p className="text-slate-300 truncate">{r.name}</p>
-                                        <p className={cn("text-xs", r.ok ? "text-slate-400" : "text-red-300")}>{r.text}</p>
+                                        <p className={cn("text-xs", r.dup ? "text-amber-300" : r.ok ? "text-slate-400" : "text-red-300")}>{r.text}</p>
                                     </div>
                                 </div>
                             ))}

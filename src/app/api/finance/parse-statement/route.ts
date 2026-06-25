@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { createHash } from 'crypto';
 import { getServerSupabase } from '@/lib/emailSync';
 import { parseStatement } from '@/lib/parseStatement';
 
@@ -25,11 +26,29 @@ export async function POST(req: NextRequest) {
         if (!pdfRes.ok) throw new Error(`No se pudo descargar el PDF (${pdfRes.status})`);
         const buf = Buffer.from(await pdfRes.arrayBuffer());
         const pdfBase64 = buf.toString('base64');
+        const fileHash = createHash('sha256').update(buf).digest('hex');
+
+        const supabase = getServerSupabase();
+
+        // 1.5) Duplicado por archivo (mismo PDF) → no gastamos la IA ni duplicamos
+        {
+            const { data: dup } = await supabase
+                .from('bank_statements')
+                .select('id, period_label, account_id')
+                .eq('file_hash', fileHash)
+                .limit(1);
+            if (dup && dup.length) {
+                return NextResponse.json({
+                    ok: true,
+                    duplicate: true,
+                    reason: 'file',
+                    summary: { period_label: dup[0].period_label, transactions: 0 },
+                });
+            }
+        }
 
         // 2) IA: parsea y clasifica
         const parsed = await parseStatement(pdfBase64);
-
-        const supabase = getServerSupabase();
 
         // 3) Resuelve la tarjeta: usa la elegida, o detéctala por últimos 4 / banco, o créala
         let accountName: string | null = null;
@@ -70,6 +89,31 @@ export async function POST(req: NextRequest) {
             accountName = (data?.name as string) || null;
         }
 
+        // 3.5) Duplicado por periodo (misma tarjeta + misma fecha de corte)
+        if (parsed.statement_date) {
+            const { data: dupPeriod } = await supabase
+                .from('bank_statements')
+                .select('id, period_label')
+                .eq('account_id', accountId)
+                .eq('statement_date', parsed.statement_date)
+                .limit(1);
+            if (dupPeriod && dupPeriod.length) {
+                return NextResponse.json({
+                    ok: true,
+                    duplicate: true,
+                    reason: 'period',
+                    summary: {
+                        account_id: accountId,
+                        account_name: accountName,
+                        account_created: accountCreated,
+                        period_label: parsed.period_label,
+                        statement_date: parsed.statement_date,
+                        transactions: 0,
+                    },
+                });
+            }
+        }
+
         // 4) Guarda el estado de cuenta + movimientos
         const { data: stmt, error: sErr } = await supabase
             .from('bank_statements')
@@ -89,6 +133,7 @@ export async function POST(req: NextRequest) {
                 last4: parsed.last4 || null,
                 file_url: fileUrl,
                 file_name: fileName || null,
+                file_hash: fileHash,
                 raw: parsed,
             })
             .select('id')
