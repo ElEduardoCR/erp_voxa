@@ -446,35 +446,46 @@ export default function FinancePage() {
 
                     {/* Tarjetas registradas */}
                     {accounts.length > 0 && (
-                        <div className="mt-5 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-                            {accounts.map(a => {
-                                const st = latestByAccount.get(a.id);
-                                return (
-                                    <div key={a.id} className="bg-slate-900/40 border border-slate-700/50 rounded-2xl p-4 flex flex-col gap-2">
-                                        <div className="flex items-start justify-between">
-                                            <div className="flex items-center gap-2">
-                                                {a.type === "credit" ? <CreditCard className="w-4 h-4 text-red-400" /> : <Wallet className="w-4 h-4 text-sky-400" />}
-                                                <span className="font-semibold text-slate-100 text-sm">{a.name}</span>
-                                                {a.last4 && <span className="text-xs text-slate-500 font-mono">••{a.last4}</span>}
+                        <div className="mt-5">
+                            <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+                                <span className="text-sm font-medium text-slate-300">Tus tarjetas</span>
+                                <span className="inline-flex items-center gap-2 text-sm bg-red-500/10 border border-red-500/20 rounded-xl px-3 py-1.5">
+                                    <CreditCard className="w-4 h-4 text-red-400" />
+                                    <span className="text-red-300/80">Deuda total tarjetas de crédito:</span>
+                                    <span className="text-red-300 font-bold">{fmtMoney(resumen.deudaCredito)}</span>
+                                </span>
+                            </div>
+                            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                                {accounts.map(a => {
+                                    const st = latestByAccount.get(a.id);
+                                    const isCredit = a.type === "credit";
+                                    return (
+                                        <div key={a.id} className="bg-slate-900/40 border border-slate-700/50 rounded-2xl p-4 flex flex-col gap-2">
+                                            <div className="flex items-start justify-between">
+                                                <div className="flex items-center gap-2">
+                                                    {isCredit ? <CreditCard className="w-4 h-4 text-red-400" /> : <Wallet className="w-4 h-4 text-sky-400" />}
+                                                    <span className="font-semibold text-slate-100 text-sm">{a.name}</span>
+                                                    {a.last4 && <span className="text-xs text-slate-500 font-mono">••{a.last4}</span>}
+                                                </div>
+                                                <button onClick={() => deleteAccount(a.id)} className="text-slate-600 hover:text-red-400 p-1 rounded-md hover:bg-slate-800"><Trash2 className="w-3.5 h-3.5" /></button>
                                             </div>
-                                            <button onClick={() => deleteAccount(a.id)} className="text-slate-600 hover:text-red-400 p-1 rounded-md hover:bg-slate-800"><Trash2 className="w-3.5 h-3.5" /></button>
-                                        </div>
-                                        <div className="flex items-center justify-between text-xs">
-                                            <span className={cn("px-2 py-0.5 rounded-full border", a.type === "credit" ? "bg-red-500/10 text-red-300 border-red-500/20" : "bg-sky-500/10 text-sky-300 border-sky-500/20")}>
-                                                {a.type === "credit" ? "Crédito" : "Débito"}
-                                            </span>
-                                            {st ? (
-                                                <span className="text-slate-400">Saldo: <span className="text-slate-200 font-medium">{fmtMoney(st.new_balance)}</span></span>
-                                            ) : (
-                                                <span className="text-slate-600">Sin estados de cuenta</span>
+                                            <div className="flex items-center justify-between text-xs">
+                                                <span className={cn("px-2 py-0.5 rounded-full border", isCredit ? "bg-red-500/10 text-red-300 border-red-500/20" : "bg-sky-500/10 text-sky-300 border-sky-500/20")}>
+                                                    {isCredit ? "Crédito" : "Débito"}
+                                                </span>
+                                                {st ? (
+                                                    <span className="text-slate-400">{isCredit ? "Deuda" : "Saldo"}: <span className={cn("font-semibold", isCredit ? "text-red-300" : "text-slate-200")}>{fmtMoney(st.new_balance)}</span></span>
+                                                ) : (
+                                                    <span className="text-slate-600">Sin estados de cuenta</span>
+                                                )}
+                                            </div>
+                                            {st?.due_date && (
+                                                <p className="text-xs text-amber-300/80 flex items-center gap-1"><CalendarClock className="w-3 h-3" /> Pago: {fmtDate(st.due_date)}</p>
                                             )}
                                         </div>
-                                        {st?.due_date && (
-                                            <p className="text-xs text-amber-300/80 flex items-center gap-1"><CalendarClock className="w-3 h-3" /> Pago: {fmtDate(st.due_date)}</p>
-                                        )}
-                                    </div>
-                                );
-                            })}
+                                    );
+                                })}
+                            </div>
                         </div>
                     )}
                 </div>
