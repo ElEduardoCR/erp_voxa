@@ -1,11 +1,12 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/lib/supabase";
 import { parseCFDI } from "@/lib/cfdiParse";
 import {
     ArrowLeft, Receipt, RefreshCw, Search, X, Filter, FolderUp, FileCode,
     UploadCloud, CheckCircle, AlertCircle, FileCheck, Check, Wallet,
+    Landmark, CalendarClock,
 } from "lucide-react";
 import Link from "next/link";
 import clsx from "clsx";
@@ -49,6 +50,20 @@ type ImportReport = {
 
 const fmtMoney = (n: number | null) =>
     n == null ? "—" : `$${Number(n).toLocaleString("es-MX", { minimumFractionDigits: 2 })}`;
+
+const MESES = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"];
+const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+
+// El IVA de un mes se declara/paga el 17 del mes siguiente (corte mensual del SAT)
+function periodDueInfo(year: number, month: number) {
+    const dueYear = month === 11 ? year + 1 : year;
+    const dueMonth = month === 11 ? 0 : month + 1;
+    return {
+        periodLabel: `${MESES[month]} ${year}`,
+        dueLabel: `17 de ${MESES[dueMonth]} de ${dueYear}`,
+        dueDate: new Date(dueYear, dueMonth, 17),
+    };
+}
 
 export default function IssuedInvoicesPage() {
     const [rows, setRows] = useState<IssuedInvoice[]>([]);
@@ -256,6 +271,27 @@ export default function IssuedInvoicesPage() {
         { key: "unpaid", label: "Por cobrar" },
     ];
 
+    // IVA por mes (por fecha de emisión). Se paga el 17 del mes siguiente.
+    const ivaByMonth = useMemo(() => {
+        const m = new Map<string, { year: number; month: number; iva: number; count: number }>();
+        for (const r of rows) {
+            const d = new Date(r.invoice_date || r.created_at);
+            if (isNaN(d.getTime())) continue;
+            const key = `${d.getFullYear()}-${d.getMonth()}`;
+            const e = m.get(key) || { year: d.getFullYear(), month: d.getMonth(), iva: 0, count: 0 };
+            e.iva += Number(r.vat_total) || 0;
+            e.count += 1;
+            m.set(key, e);
+        }
+        return Array.from(m.values()).sort((a, b) => b.year - a.year || b.month - a.month);
+    }, [rows]);
+
+    const now = new Date();
+    const todayMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+    const currentEntry = ivaByMonth.find(e => e.year === now.getFullYear() && e.month === now.getMonth());
+    const currentDue = periodDueInfo(now.getFullYear(), now.getMonth());
+    const otherPeriods = ivaByMonth.filter(e => !(e.year === now.getFullYear() && e.month === now.getMonth())).slice(0, 6);
+
     return (
         <div className="min-h-screen bg-[#0B1120] text-slate-200 p-6 md:p-10 font-[family-name:var(--font-sans)]">
             <div className="w-full space-y-8">
@@ -284,6 +320,39 @@ export default function IssuedInvoicesPage() {
                         {msg.text}
                     </div>
                 )}
+
+                {/* IVA por pagar (corte mensual del SAT) */}
+                <div className="bg-gradient-to-br from-indigo-500/10 to-violet-500/10 border border-indigo-500/30 rounded-3xl p-6 backdrop-blur-sm shadow-lg shadow-black/20">
+                    <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-6">
+                        <div className="flex items-start gap-4">
+                            <div className="bg-indigo-500/15 p-3 rounded-2xl border border-indigo-500/20 flex-shrink-0"><Landmark className="w-6 h-6 text-indigo-300" /></div>
+                            <div>
+                                <p className="text-indigo-300/80 text-sm font-semibold uppercase tracking-wider">IVA por pagar · {cap(currentDue.periodLabel)}</p>
+                                <p className="text-4xl font-bold text-white tracking-tight mt-1">{fmtMoney(currentEntry?.iva || 0)}</p>
+                                <p className="text-sm text-amber-300 mt-2 flex items-center gap-1.5"><CalendarClock className="w-4 h-4" /> Vence el {currentDue.dueLabel}</p>
+                                <p className="text-xs text-slate-400 mt-1">{currentEntry?.count || 0} factura(s) emitida(s) este mes · IVA trasladado</p>
+                            </div>
+                        </div>
+                        {otherPeriods.length > 0 && (
+                            <div className="flex flex-wrap gap-2 lg:justify-end lg:max-w-[58%]">
+                                {otherPeriods.map(e => {
+                                    const info = periodDueInfo(e.year, e.month);
+                                    const vencido = info.dueDate.getTime() < todayMidnight;
+                                    return (
+                                        <div key={`${e.year}-${e.month}`} className={cn("rounded-xl px-3 py-2 border min-w-[140px]", vencido ? "bg-red-500/5 border-red-500/20" : "bg-slate-900/40 border-slate-700/50")}>
+                                            <p className="text-slate-300 font-medium text-xs">{cap(info.periodLabel)}</p>
+                                            <p className="text-white font-semibold text-sm mt-0.5">{fmtMoney(e.iva)}</p>
+                                            <p className={cn("text-[11px] mt-0.5 flex items-center gap-1", vencido ? "text-red-300" : "text-slate-400")}>
+                                                <CalendarClock className="w-3 h-3" /> {vencido ? "Venció" : "Vence"} {info.dueLabel}
+                                            </p>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        )}
+                    </div>
+                    <p className="text-[11px] text-slate-500 mt-4">Suma del IVA de las facturas emitidas en cada mes (por fecha de emisión). No resta el IVA acreditable de tus compras.</p>
+                </div>
 
                 {/* Cargador masivo */}
                 <div className="bg-slate-800/40 border border-slate-700/50 rounded-3xl p-6 backdrop-blur-sm">
