@@ -65,8 +65,11 @@ function periodDueInfo(year: number, month: number) {
     };
 }
 
+type PORowLite = { vat_total: number | null; invoice_date: string | null; created_at: string; status: string | null };
+
 export default function IssuedInvoicesPage() {
     const [rows, setRows] = useState<IssuedInvoice[]>([]);
+    const [poRows, setPoRows] = useState<PORowLite[]>([]);
     const [loading, setLoading] = useState(true);
 
     // Filtros
@@ -103,7 +106,21 @@ export default function IssuedInvoicesPage() {
         }
     };
 
-    useEffect(() => { fetchInvoices(); }, []);
+    // IVA acreditable: facturas de compra (para el IVA neto). Tolerante si falla.
+    const fetchPurchasesIva = async () => {
+        try {
+            const { data, error } = await supabase
+                .from("purchase_orders")
+                .select("vat_total, invoice_date, created_at, status")
+                .limit(10000);
+            if (error) throw error;
+            setPoRows((data as PORowLite[]) || []);
+        } catch {
+            setPoRows([]);
+        }
+    };
+
+    useEffect(() => { fetchInvoices(); fetchPurchasesIva(); }, []);
 
     const togglePaid = async (row: IssuedInvoice) => {
         const newPaid = !row.paid;
@@ -271,20 +288,32 @@ export default function IssuedInvoicesPage() {
         { key: "unpaid", label: "Por cobrar" },
     ];
 
-    // IVA por mes (por fecha de emisión). Se paga el 17 del mes siguiente.
+    // IVA por mes (por fecha de emisión). Neto = trasladado (ventas) − acreditable (compras).
+    // Se declara/paga el 17 del mes siguiente.
     const ivaByMonth = useMemo(() => {
-        const m = new Map<string, { year: number; month: number; iva: number; count: number }>();
-        for (const r of rows) {
-            const d = new Date(r.invoice_date || r.created_at);
-            if (isNaN(d.getTime())) continue;
+        const m = new Map<string, { year: number; month: number; trasladado: number; acreditable: number; count: number }>();
+        const bump = (dateStr: string | null, created: string) => {
+            const d = new Date(dateStr || created);
+            if (isNaN(d.getTime())) return null;
             const key = `${d.getFullYear()}-${d.getMonth()}`;
-            const e = m.get(key) || { year: d.getFullYear(), month: d.getMonth(), iva: 0, count: 0 };
-            e.iva += Number(r.vat_total) || 0;
-            e.count += 1;
+            const e = m.get(key) || { year: d.getFullYear(), month: d.getMonth(), trasladado: 0, acreditable: 0, count: 0 };
             m.set(key, e);
+            return e;
+        };
+        for (const r of rows) {
+            const e = bump(r.invoice_date, r.created_at);
+            if (e) { e.trasladado += Number(r.vat_total) || 0; e.count += 1; }
         }
-        return Array.from(m.values()).sort((a, b) => b.year - a.year || b.month - a.month);
-    }, [rows]);
+        for (const p of poRows) {
+            const s = (p.status || "").toLowerCase();
+            if (s === "cancelled" || s === "canceled") continue;
+            const e = bump(p.invoice_date, p.created_at);
+            if (e) e.acreditable += Number(p.vat_total) || 0;
+        }
+        return Array.from(m.values())
+            .map(e => ({ ...e, neto: e.trasladado - e.acreditable }))
+            .sort((a, b) => b.year - a.year || b.month - a.month);
+    }, [rows, poRows]);
 
     const now = new Date();
     const todayMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
@@ -306,7 +335,7 @@ export default function IssuedInvoicesPage() {
                             <p className="text-slate-400 text-sm mt-1">CFDI que tu negocio ha emitido a clientes. Sube tu carpeta de XML para importarlas.</p>
                         </div>
                     </div>
-                    <button onClick={fetchInvoices} className="p-2 text-slate-400 hover:text-white hover:bg-slate-700 rounded-lg transition-colors flex items-center gap-2 text-sm font-medium" disabled={loading}>
+                    <button onClick={() => { fetchInvoices(); fetchPurchasesIva(); }} className="p-2 text-slate-400 hover:text-white hover:bg-slate-700 rounded-lg transition-colors flex items-center gap-2 text-sm font-medium" disabled={loading}>
                         <RefreshCw className={cn("w-4 h-4", loading && "animate-spin text-teal-400")} /> Refresh
                     </button>
                 </header>
@@ -321,38 +350,65 @@ export default function IssuedInvoicesPage() {
                     </div>
                 )}
 
-                {/* IVA por pagar (corte mensual del SAT) */}
-                <div className="bg-gradient-to-br from-indigo-500/10 to-violet-500/10 border border-indigo-500/30 rounded-3xl p-6 backdrop-blur-sm shadow-lg shadow-black/20">
-                    <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-6">
-                        <div className="flex items-start gap-4">
-                            <div className="bg-indigo-500/15 p-3 rounded-2xl border border-indigo-500/20 flex-shrink-0"><Landmark className="w-6 h-6 text-indigo-300" /></div>
-                            <div>
-                                <p className="text-indigo-300/80 text-sm font-semibold uppercase tracking-wider">IVA por pagar · {cap(currentDue.periodLabel)}</p>
-                                <p className="text-4xl font-bold text-white tracking-tight mt-1">{fmtMoney(currentEntry?.iva || 0)}</p>
-                                <p className="text-sm text-amber-300 mt-2 flex items-center gap-1.5"><CalendarClock className="w-4 h-4" /> Vence el {currentDue.dueLabel}</p>
-                                <p className="text-xs text-slate-400 mt-1">{currentEntry?.count || 0} factura(s) emitida(s) este mes · IVA trasladado</p>
+                {/* IVA neto del mes (trasladado ventas − acreditable compras). Corte mensual del SAT */}
+                {(() => {
+                    const cur = currentEntry || { trasladado: 0, acreditable: 0, neto: 0, count: 0 };
+                    const aFavor = cur.neto < 0;
+                    return (
+                        <div className={cn(
+                            "rounded-3xl p-6 backdrop-blur-sm shadow-lg shadow-black/20 border bg-gradient-to-br",
+                            aFavor ? "from-emerald-500/10 to-teal-500/10 border-emerald-500/30" : "from-indigo-500/10 to-violet-500/10 border-indigo-500/30"
+                        )}>
+                            <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-6">
+                                <div className="flex items-start gap-4">
+                                    <div className={cn("p-3 rounded-2xl border flex-shrink-0", aFavor ? "bg-emerald-500/15 border-emerald-500/20" : "bg-indigo-500/15 border-indigo-500/20")}>
+                                        <Landmark className={cn("w-6 h-6", aFavor ? "text-emerald-300" : "text-indigo-300")} />
+                                    </div>
+                                    <div>
+                                        <p className={cn("text-sm font-semibold uppercase tracking-wider", aFavor ? "text-emerald-300/80" : "text-indigo-300/80")}>
+                                            IVA neto · {cap(currentDue.periodLabel)} · {aFavor ? "a favor" : "a pagar"}
+                                        </p>
+                                        <p className="text-4xl font-bold text-white tracking-tight mt-1">{fmtMoney(Math.abs(cur.neto))}</p>
+                                        <p className="text-xs text-slate-300 mt-2">
+                                            Trasladado (ventas) <span className="text-slate-100 font-medium">{fmtMoney(cur.trasladado)}</span>
+                                            {"  −  "}Acreditable (compras) <span className="text-slate-100 font-medium">{fmtMoney(cur.acreditable)}</span>
+                                        </p>
+                                        {aFavor ? (
+                                            <p className="text-sm text-emerald-300 mt-2 flex items-center gap-1.5">Saldo a favor — no hay pago este periodo</p>
+                                        ) : (
+                                            <p className="text-sm text-amber-300 mt-2 flex items-center gap-1.5"><CalendarClock className="w-4 h-4" /> Vence el {currentDue.dueLabel}</p>
+                                        )}
+                                    </div>
+                                </div>
+                                {otherPeriods.length > 0 && (
+                                    <div className="flex flex-wrap gap-2 lg:justify-end lg:max-w-[58%]">
+                                        {otherPeriods.map(e => {
+                                            const info = periodDueInfo(e.year, e.month);
+                                            const favor = e.neto < 0;
+                                            const vencido = !favor && info.dueDate.getTime() < todayMidnight;
+                                            return (
+                                                <div key={`${e.year}-${e.month}`} className={cn(
+                                                    "rounded-xl px-3 py-2 border min-w-[150px]",
+                                                    favor ? "bg-emerald-500/5 border-emerald-500/20" : vencido ? "bg-red-500/5 border-red-500/20" : "bg-slate-900/40 border-slate-700/50"
+                                                )}>
+                                                    <div className="flex items-center justify-between gap-2">
+                                                        <p className="text-slate-300 font-medium text-xs">{cap(info.periodLabel)}</p>
+                                                        <span className={cn("text-[10px] px-1.5 py-0.5 rounded-full border", favor ? "bg-emerald-500/10 text-emerald-300 border-emerald-500/20" : "bg-indigo-500/10 text-indigo-300 border-indigo-500/20")}>{favor ? "a favor" : "a pagar"}</span>
+                                                    </div>
+                                                    <p className={cn("font-semibold text-sm mt-0.5", favor ? "text-emerald-300" : "text-white")}>{fmtMoney(Math.abs(e.neto))}</p>
+                                                    <p className={cn("text-[11px] mt-0.5 flex items-center gap-1", favor ? "text-emerald-300/70" : vencido ? "text-red-300" : "text-slate-400")}>
+                                                        {favor ? "Sin pago" : <><CalendarClock className="w-3 h-3" /> {vencido ? "Venció" : "Vence"} {info.dueLabel}</>}
+                                                    </p>
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                )}
                             </div>
+                            <p className="text-[11px] text-slate-500 mt-4">IVA neto = trasladado (facturas emitidas) − acreditable (facturas de compra), por fecha de emisión. Positivo = a pagar (17 del mes siguiente); negativo = saldo a favor.</p>
                         </div>
-                        {otherPeriods.length > 0 && (
-                            <div className="flex flex-wrap gap-2 lg:justify-end lg:max-w-[58%]">
-                                {otherPeriods.map(e => {
-                                    const info = periodDueInfo(e.year, e.month);
-                                    const vencido = info.dueDate.getTime() < todayMidnight;
-                                    return (
-                                        <div key={`${e.year}-${e.month}`} className={cn("rounded-xl px-3 py-2 border min-w-[140px]", vencido ? "bg-red-500/5 border-red-500/20" : "bg-slate-900/40 border-slate-700/50")}>
-                                            <p className="text-slate-300 font-medium text-xs">{cap(info.periodLabel)}</p>
-                                            <p className="text-white font-semibold text-sm mt-0.5">{fmtMoney(e.iva)}</p>
-                                            <p className={cn("text-[11px] mt-0.5 flex items-center gap-1", vencido ? "text-red-300" : "text-slate-400")}>
-                                                <CalendarClock className="w-3 h-3" /> {vencido ? "Venció" : "Vence"} {info.dueLabel}
-                                            </p>
-                                        </div>
-                                    );
-                                })}
-                            </div>
-                        )}
-                    </div>
-                    <p className="text-[11px] text-slate-500 mt-4">Suma del IVA de las facturas emitidas en cada mes (por fecha de emisión). No resta el IVA acreditable de tus compras.</p>
-                </div>
+                    );
+                })()}
 
                 {/* Cargador masivo */}
                 <div className="bg-slate-800/40 border border-slate-700/50 rounded-3xl p-6 backdrop-blur-sm">
