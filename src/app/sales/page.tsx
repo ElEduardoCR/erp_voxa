@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { supabase } from "@/lib/supabase";
-import { FileText, Plus, RefreshCw, ArrowLeft, Download, FileSpreadsheet, Edit3, CheckCircle, Upload, Eye, Link2 } from "lucide-react";
+import { FileText, Plus, RefreshCw, ArrowLeft, Download, FileSpreadsheet, Edit3, CheckCircle, Upload, Eye, Link2, Layers } from "lucide-react";
 import Link from "next/link";
 import clsx from "clsx";
 import { twMerge } from "tailwind-merge";
@@ -236,6 +236,12 @@ export default function SalesPage() {
                                     {pendingMatches}
                                 </span>
                             )}
+                        </Link>
+                        <Link
+                            href="/sales/overhead"
+                            className="flex items-center justify-center gap-2 bg-slate-800 hover:bg-slate-700 text-slate-200 px-5 py-3 rounded-xl font-medium transition-all border border-slate-700 active:scale-95"
+                        >
+                            <Layers className="w-5 h-5 text-amber-400" /> Overhead
                         </Link>
                         <Link
                             href="/sales/new"

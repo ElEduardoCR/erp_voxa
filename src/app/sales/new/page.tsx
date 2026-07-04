@@ -5,11 +5,13 @@ import { useForm, useFieldArray } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import * as z from "zod";
 import { supabase } from "@/lib/supabase";
-import { ArrowLeft, Save, Plus, Trash2, Calculator, AlertCircle, RefreshCw } from "lucide-react";
+import { ArrowLeft, Save, Plus, Trash2, Calculator, AlertCircle, RefreshCw, Layers, Settings2 } from "lucide-react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import clsx from "clsx";
 import { twMerge } from "tailwind-merge";
+import OverheadModal from "../OverheadModal";
+import { OverheadConfig, overheadTotal } from "@/lib/overhead";
 
 function cn(...inputs: (string | undefined | null | false)[]) {
     return twMerge(clsx(inputs));
@@ -42,6 +44,8 @@ function QuotationForm() {
     const [isLoadingClients, setIsLoadingClients] = useState(true);
     const [isSubmitting, setIsSubmitting] = useState(false);
     const [errorMsg, setErrorMsg] = useState<string | null>(null);
+    const [overheadConfig, setOverheadConfig] = useState<OverheadConfig | null>(null);
+    const [showOverhead, setShowOverhead] = useState(false);
 
     const {
         register,
@@ -72,6 +76,10 @@ function QuotationForm() {
     const subtotal = watchItems.reduce((acc, item) => acc + ((item.quantity || 0) * (item.unit_price || 0)), 0);
     const vatTotal = subtotal * 0.16; // 16% IVA
     const total = subtotal + vatTotal;
+
+    // Overhead (interno): no se cobra al cliente ni va en el PDF
+    const overheadInternal = overheadConfig?.enabled ? overheadTotal(overheadConfig) : 0;
+    const overheadMargin = subtotal - overheadInternal;
 
     const formatCurrency = (amount: number) => {
         return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(amount || 0);
@@ -127,6 +135,8 @@ function QuotationForm() {
                         unit_price: i.unit_price
                     }))
                 });
+
+                if (quote.overhead_config) setOverheadConfig(quote.overhead_config as OverheadConfig);
             } catch (err) {
                 console.error("Failed to load quotation for editing", err);
                 setErrorMsg("Error loading quotation data.");
@@ -141,6 +151,10 @@ function QuotationForm() {
         try {
             let currentQuoteId = editId;
 
+            const ovhEnabled = !!overheadConfig?.enabled;
+            const ovhTotal = ovhEnabled ? overheadTotal(overheadConfig!) : 0;
+            const ovhFields = { overhead_enabled: ovhEnabled, overhead_total: ovhTotal, overhead_config: overheadConfig };
+
             if (isEditing) {
                 // Update existing quote
                 const { error: quoteError } = await supabase
@@ -153,6 +167,7 @@ function QuotationForm() {
                         subtotal,
                         vat_total: vatTotal,
                         total,
+                        ...ovhFields,
                         updated_at: new Date().toISOString()
                     })
                     .eq('id', editId);
@@ -177,6 +192,7 @@ function QuotationForm() {
                     subtotal,
                     vat_total: vatTotal,
                     total,
+                    ...ovhFields,
                     status: 'Draft'
                 };
 
@@ -382,6 +398,37 @@ function QuotationForm() {
                         </div>
                     </div>
 
+                    {/* Overhead / Costos indirectos (interno) */}
+                    <div className="bg-slate-800/40 p-6 rounded-3xl border border-slate-700/50 backdrop-blur-sm">
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                            <div className="flex items-start gap-3">
+                                <div className="bg-amber-500/10 p-2.5 rounded-xl border border-amber-500/20"><Layers className="w-5 h-5 text-amber-400" /></div>
+                                <div>
+                                    <h2 className="text-lg font-semibold text-white">Costos indirectos (overhead)</h2>
+                                    <p className="text-slate-400 text-sm mt-0.5 max-w-xl">Opcional y de uso interno: renta, mano de obra, máquina, seguros, etc. Sirve para conocer tu costo real y margen. No se cobra al cliente ni aparece en el PDF.</p>
+                                </div>
+                            </div>
+                            <div className="flex items-center gap-3 flex-shrink-0">
+                                {overheadConfig?.enabled && (
+                                    <div className="text-right">
+                                        <p className="text-xs text-slate-500">Overhead estimado</p>
+                                        <p className="text-lg font-bold text-amber-300">{formatCurrency(overheadInternal)}</p>
+                                    </div>
+                                )}
+                                <button
+                                    type="button"
+                                    onClick={() => setShowOverhead(true)}
+                                    className="inline-flex items-center gap-2 bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 px-5 py-2.5 rounded-xl font-medium text-sm border border-amber-500/25 whitespace-nowrap"
+                                >
+                                    <Settings2 className="w-4 h-4" /> {overheadConfig?.enabled ? "Editar overhead" : "Configurar overhead"}
+                                </button>
+                            </div>
+                        </div>
+                        <div className="mt-4 pt-4 border-t border-slate-700/40">
+                            <Link href="/sales/overhead" className="text-xs text-slate-500 hover:text-amber-300">Editar catálogo global de costos →</Link>
+                        </div>
+                    </div>
+
                     {/* Totals & Submit */}
                     <div className="flex flex-col md:flex-row justify-between items-end gap-6 bg-slate-800/20 p-6 rounded-3xl border border-slate-700/30">
                         <div className="w-full md:w-auto">
@@ -411,10 +458,36 @@ function QuotationForm() {
                                 <span>Total Neto</span>
                                 <span className="text-emerald-400">{formatCurrency(total)}</span>
                             </div>
+
+                            {overheadConfig?.enabled && (
+                                <div className="mt-3 pt-3 border-t border-dashed border-slate-700/50 space-y-2">
+                                    <div className="flex justify-between items-center text-xs text-amber-300/80 font-medium uppercase tracking-wide">
+                                        <span className="flex items-center gap-1"><Layers className="w-3.5 h-3.5" /> Interno</span>
+                                        <span>no se cobra</span>
+                                    </div>
+                                    <div className="flex justify-between items-center text-sm text-slate-400">
+                                        <span>Overhead</span>
+                                        <span className="text-amber-300 font-medium">{formatCurrency(overheadInternal)}</span>
+                                    </div>
+                                    <div className="flex justify-between items-center text-sm text-slate-400">
+                                        <span>Margen (subtotal − overhead)</span>
+                                        <span className={cn("font-medium", overheadMargin >= 0 ? "text-emerald-400" : "text-red-400")}>{formatCurrency(overheadMargin)}</span>
+                                    </div>
+                                </div>
+                            )}
                         </div>
                     </div>
 
                 </form>
+
+                {showOverhead && (
+                    <OverheadModal
+                        subtotal={subtotal}
+                        config={overheadConfig}
+                        onClose={() => setShowOverhead(false)}
+                        onSave={(cfg) => { setOverheadConfig(cfg); setShowOverhead(false); }}
+                    />
+                )}
             </div>
         </div>
     );
