@@ -5,31 +5,33 @@ import { useForm, useFieldArray } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import * as z from "zod";
 import { supabase } from "@/lib/supabase";
-import { ArrowLeft, Save, Plus, Trash2, Calculator, AlertCircle, RefreshCw, Layers, Settings2 } from "lucide-react";
+import { ArrowLeft, Save, Plus, Trash2, Calculator, AlertCircle, RefreshCw, Layers, Settings2, Wrench, Percent } from "lucide-react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import clsx from "clsx";
 import { twMerge } from "tailwind-merge";
 import OverheadModal from "../OverheadModal";
+import LineCostModal from "../LineCostModal";
 import { OverheadConfig, overheadTotal } from "@/lib/overhead";
+import { LineCostConfig, emptyLineCost, computeQuote, lineDirectUnit } from "@/lib/quoteCosting";
 
 function cn(...inputs: (string | undefined | null | false)[]) {
     return twMerge(clsx(inputs));
 }
 
-// Zod Schema
 const itemSchema = z.object({
-    description: z.string().min(1, "Description is required"),
+    description: z.string().min(1, "Descripción requerida"),
     quantity: z.coerce.number().min(1, "Min 1"),
-    unit_price: z.coerce.number().min(0, "Invalid price"),
+    margin_pct: z.string().optional(),
+    cost_config: z.any().optional(),
 });
 
 const quotationSchema = z.object({
-    client_id: z.string().min(1, "Please select a client"),
+    client_id: z.string().min(1, "Selecciona un cliente"),
     seller: z.string().optional().or(z.literal('')),
     delivery_time: z.string().optional().or(z.literal('')),
     terms_conditions: z.string().optional().or(z.literal('')),
-    items: z.array(itemSchema).min(1, "At least one item is required"),
+    items: z.array(itemSchema).min(1, "Agrega al menos una partida"),
 });
 
 type QuotationFormValues = z.infer<typeof quotationSchema>;
@@ -44,55 +46,45 @@ function QuotationForm() {
     const [isLoadingClients, setIsLoadingClients] = useState(true);
     const [isSubmitting, setIsSubmitting] = useState(false);
     const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
     const [overheadConfig, setOverheadConfig] = useState<OverheadConfig | null>(null);
     const [showOverhead, setShowOverhead] = useState(false);
+    const [generalMargin, setGeneralMargin] = useState<number>(30);
+    const [showLineCost, setShowLineCost] = useState<number | null>(null);
 
-    const {
-        register,
-        control,
-        handleSubmit,
-        watch,
-        reset,
-        formState: { errors }
-    } = useForm<QuotationFormValues>({
+    const { register, control, handleSubmit, watch, reset, setValue, formState: { errors } } = useForm<QuotationFormValues>({
         resolver: zodResolver(quotationSchema) as any,
         defaultValues: {
             client_id: "",
             seller: "",
             delivery_time: "",
             terms_conditions: "",
-            items: [{ description: "", quantity: 1, unit_price: 0 }]
+            items: [{ description: "", quantity: 1, margin_pct: "", cost_config: emptyLineCost() }],
         }
     });
 
-    const { fields, append, remove } = useFieldArray({
-        control,
-        name: "items"
-    });
-
+    const { fields, append, remove } = useFieldArray({ control, name: "items" });
     const watchItems = watch("items");
 
-    // Calculations
-    const subtotal = watchItems.reduce((acc, item) => acc + ((item.quantity || 0) * (item.unit_price || 0)), 0);
-    const vatTotal = subtotal * 0.16; // 16% IVA
-    const total = subtotal + vatTotal;
-
-    // Overhead (interno): no se cobra al cliente ni va en el PDF
+    // Costeo: costo por línea + overhead prorrateado (por duración) + margen → precio de venta
     const overheadInternal = overheadConfig?.enabled ? overheadTotal(overheadConfig) : 0;
-    const overheadMargin = subtotal - overheadInternal;
+    const costing = computeQuote(
+        (watchItems || []).map(it => ({
+            quantity: Number(it.quantity) || 0,
+            cost: (it.cost_config as LineCostConfig) ?? null,
+            marginPct: it.margin_pct === undefined || it.margin_pct === "" ? null : Number(it.margin_pct),
+        })),
+        overheadInternal,
+        Number(generalMargin) || 0,
+    );
 
-    const formatCurrency = (amount: number) => {
-        return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(amount || 0);
-    };
+    const formatCurrency = (amount: number) =>
+        new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(amount || 0);
 
     useEffect(() => {
-        async function fetchClients() {
+        (async () => {
             try {
-                const { data, error } = await supabase
-                    .from('clients')
-                    .select('id, business_name')
-                    .order('business_name', { ascending: true });
-
+                const { data, error } = await supabase.from('clients').select('id, business_name').order('business_name', { ascending: true });
                 if (error) throw error;
                 setClients(data || []);
             } catch (err) {
@@ -100,46 +92,36 @@ function QuotationForm() {
             } finally {
                 setIsLoadingClients(false);
             }
-        }
-        fetchClients();
+        })();
     }, []);
 
     useEffect(() => {
         async function fetchQuote() {
             if (!editId) return;
             try {
-                const { data: quote, error: quoteError } = await supabase
-                    .from('quotations')
-                    .select('*')
-                    .eq('id', editId)
-                    .single();
-
+                const { data: quote, error: quoteError } = await supabase.from('quotations').select('*').eq('id', editId).single();
                 if (quoteError) throw quoteError;
-
-                const { data: items, error: itemsError } = await supabase
-                    .from('quotation_items')
-                    .select('*')
-                    .eq('quotation_id', editId);
-
+                const { data: items, error: itemsError } = await supabase.from('quotation_items').select('*').eq('quotation_id', editId);
                 if (itemsError) throw itemsError;
 
-                // Reset form with fetched data
                 reset({
                     client_id: quote.client_id,
                     seller: quote.seller || "",
                     delivery_time: quote.delivery_time || "",
                     terms_conditions: quote.terms_conditions || "",
-                    items: items.map((i: any) => ({
+                    items: (items || []).map((i: any) => ({
                         description: i.description,
                         quantity: i.quantity,
-                        unit_price: i.unit_price
-                    }))
+                        margin_pct: i.margin_pct == null ? "" : String(i.margin_pct),
+                        // Cotizaciones viejas sin desglose: el precio anterior se toma como "material"
+                        cost_config: i.cost_config ?? { ...emptyLineCost(), material: Number(i.unit_price) || 0 },
+                    })),
                 });
-
+                if (quote.general_margin_pct != null) setGeneralMargin(Number(quote.general_margin_pct));
                 if (quote.overhead_config) setOverheadConfig(quote.overhead_config as OverheadConfig);
             } catch (err) {
-                console.error("Failed to load quotation for editing", err);
-                setErrorMsg("Error loading quotation data.");
+                console.error("Failed to load quotation", err);
+                setErrorMsg("Error al cargar la cotización.");
             }
         }
         fetchQuote();
@@ -153,80 +135,50 @@ function QuotationForm() {
 
             const ovhEnabled = !!overheadConfig?.enabled;
             const ovhTotal = ovhEnabled ? overheadTotal(overheadConfig!) : 0;
-            const ovhFields = { overhead_enabled: ovhEnabled, overhead_total: ovhTotal, overhead_config: overheadConfig };
+            const quoteFields = {
+                client_id: data.client_id,
+                seller: data.seller || null,
+                delivery_time: data.delivery_time || null,
+                terms_conditions: data.terms_conditions || null,
+                subtotal: costing.subtotal,
+                vat_total: costing.vat,
+                total: costing.total,
+                general_margin_pct: Number(generalMargin) || 0,
+                overhead_enabled: ovhEnabled,
+                overhead_total: ovhTotal,
+                overhead_config: overheadConfig,
+            };
 
             if (isEditing) {
-                // Update existing quote
-                const { error: quoteError } = await supabase
-                    .from('quotations')
-                    .update({
-                        client_id: data.client_id,
-                        seller: data.seller || null,
-                        delivery_time: data.delivery_time || null,
-                        terms_conditions: data.terms_conditions || null,
-                        subtotal,
-                        vat_total: vatTotal,
-                        total,
-                        ...ovhFields,
-                        updated_at: new Date().toISOString()
-                    })
-                    .eq('id', editId);
-
+                const { error: quoteError } = await supabase.from('quotations').update({ ...quoteFields, updated_at: new Date().toISOString() }).eq('id', editId);
                 if (quoteError) throw quoteError;
-
-                // Delete old items
-                const { error: delError } = await supabase
-                    .from('quotation_items')
-                    .delete()
-                    .eq('quotation_id', editId);
-
+                const { error: delError } = await supabase.from('quotation_items').delete().eq('quotation_id', editId);
                 if (delError) throw delError;
-
             } else {
-                // Insert new quote
-                const quoteData = {
-                    client_id: data.client_id,
-                    seller: data.seller || null,
-                    delivery_time: data.delivery_time || null,
-                    terms_conditions: data.terms_conditions || null,
-                    subtotal,
-                    vat_total: vatTotal,
-                    total,
-                    ...ovhFields,
-                    status: 'Draft'
-                };
-
-                const { data: insertedQuote, error: quoteError } = await supabase
-                    .from('quotations')
-                    .insert([quoteData])
-                    .select()
-                    .single();
-
+                const { data: insertedQuote, error: quoteError } = await supabase.from('quotations').insert([{ ...quoteFields, status: 'Draft' }]).select().single();
                 if (quoteError) throw quoteError;
                 currentQuoteId = insertedQuote.id;
             }
 
-            // Insert new or replaced items
-            const itemsToInsert = data.items.map(item => ({
-                quotation_id: currentQuoteId,
-                description: item.description,
-                quantity: item.quantity,
-                unit_price: item.unit_price,
-                line_total: item.quantity * item.unit_price
-            }));
-
-            const { error: itemsError } = await supabase
-                .from('quotation_items')
-                .insert(itemsToInsert);
-
+            const itemsToInsert = data.items.map((item, i) => {
+                const L = costing.lines[i];
+                return {
+                    quotation_id: currentQuoteId,
+                    description: item.description,
+                    quantity: item.quantity,
+                    unit_price: L?.unitPrice ?? 0,
+                    line_total: L?.saleTotal ?? 0,
+                    cost_config: item.cost_config ?? null,
+                    margin_pct: item.margin_pct === undefined || item.margin_pct === "" ? null : Number(item.margin_pct),
+                };
+            });
+            const { error: itemsError } = await supabase.from('quotation_items').insert(itemsToInsert);
             if (itemsError) throw itemsError;
 
-            // Navigate back to sales list on success
             router.push('/sales');
-
         } catch (error: any) {
             console.error("Error saving quotation:", error);
-            setErrorMsg(error.message || "Failed to save quotation");
+            setErrorMsg(error.message || "No se pudo guardar la cotización");
         } finally {
             setIsSubmitting(false);
         }
@@ -235,254 +187,195 @@ function QuotationForm() {
     return (
         <div className="min-h-screen bg-[#0B1120] text-slate-200 p-6 md:p-10 font-[family-name:var(--font-sans)]">
             <div className="max-w-5xl mx-auto space-y-8">
-                {/* Header */}
                 <header className="flex items-center gap-4 bg-slate-800/40 p-6 rounded-3xl border border-slate-700/50 backdrop-blur-sm">
-                    <Link href="/sales" className="p-3 bg-slate-800 hover:bg-slate-700 rounded-xl transition-colors text-slate-400 hover:text-white border border-slate-700">
-                        <ArrowLeft className="w-5 h-5" />
-                    </Link>
+                    <Link href="/sales" className="p-3 bg-slate-800 hover:bg-slate-700 rounded-xl transition-colors text-slate-400 hover:text-white border border-slate-700"><ArrowLeft className="w-5 h-5" /></Link>
                     <div>
                         <h1 className="text-3xl font-bold text-white flex items-center gap-3">
                             <Calculator className="w-8 h-8 text-emerald-400" />
                             {isEditing ? "Editar Cotización" : "Nueva Cotización"}
                         </h1>
-                        <p className="text-slate-400 text-sm mt-1">{isEditing ? "Modify an existing draft quotation" : "Create a new sales quotation with auto-calculated totals"}</p>
+                        <p className="text-slate-400 text-sm mt-1">El precio de venta se calcula del costo (piezas + overhead) y tu margen.</p>
                     </div>
                 </header>
 
                 {errorMsg && (
                     <div className="p-4 rounded-xl border bg-red-500/10 border-red-500/30 text-red-400 flex items-center gap-3">
-                        <AlertCircle className="w-5 h-5 flex-shrink-0" />
-                        {errorMsg}
+                        <AlertCircle className="w-5 h-5 flex-shrink-0" /> {errorMsg}
                     </div>
                 )}
 
                 <form onSubmit={handleSubmit(onSubmit as any)} className="space-y-8">
-                    {/* Client Selection */}
+                    {/* Cliente */}
                     <div className="bg-slate-800/40 p-6 rounded-3xl border border-slate-700/50 backdrop-blur-sm">
-                        <h2 className="text-lg font-semibold text-white mb-4">Client Details</h2>
+                        <h2 className="text-lg font-semibold text-white mb-4">Cliente</h2>
                         <div className="space-y-2 max-w-xl">
-                            <label className="text-sm font-medium text-slate-300 ml-1">Select Client *</label>
-                            <div className="relative">
-                                <select
-                                    {...register("client_id")}
-                                    className={cn(
-                                        "w-full bg-slate-900/50 border rounded-xl px-4 py-3 text-white appearance-none focus:outline-none focus:ring-2 transition-all",
-                                        errors.client_id ? "border-red-500/50 focus:border-red-500 focus:ring-red-500/20" : "border-slate-700 focus:border-emerald-500 focus:ring-emerald-500/20"
-                                    )}
-                                    disabled={isLoadingClients}
-                                >
-                                    <option value="" disabled>Choose a client...</option>
-                                    {clients.map(c => (
-                                        <option key={c.id} value={c.id}>{c.business_name}</option>
-                                    ))}
-                                </select>
-                                <div className="absolute inset-y-0 right-0 flex items-center px-4 pointer-events-none text-slate-500">
-                                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7"></path></svg>
-                                </div>
-                            </div>
+                            <label className="text-sm font-medium text-slate-300 ml-1">Selecciona cliente *</label>
+                            <select {...register("client_id")} disabled={isLoadingClients}
+                                className={cn("w-full bg-slate-900/50 border rounded-xl px-4 py-3 text-white focus:outline-none focus:ring-2 transition-all", errors.client_id ? "border-red-500/50 focus:ring-red-500/20" : "border-slate-700 focus:border-emerald-500 focus:ring-emerald-500/20")}>
+                                <option value="">Elige un cliente...</option>
+                                {clients.map(c => <option key={c.id} value={c.id}>{c.business_name}</option>)}
+                            </select>
                             {errors.client_id && <p className="text-red-400 text-xs ml-1">{errors.client_id.message}</p>}
                         </div>
                     </div>
 
-                    {/* Seller & Delivery */}
+                    {/* Info adicional */}
                     <div className="bg-slate-800/40 p-6 rounded-3xl border border-slate-700/50 backdrop-blur-sm">
                         <h2 className="text-lg font-semibold text-white mb-4">Información Adicional</h2>
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                             <div className="space-y-2">
                                 <label className="text-sm font-medium text-slate-300 ml-1">Vendedor</label>
-                                <input
-                                    {...register("seller")}
-                                    className="w-full bg-slate-900/50 border border-slate-700 rounded-xl px-4 py-3 text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 transition-all"
-                                    placeholder="Nombre del vendedor"
-                                />
+                                <input {...register("seller")} className="w-full bg-slate-900/50 border border-slate-700 rounded-xl px-4 py-3 text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 transition-all" placeholder="Nombre del vendedor" />
                             </div>
                             <div className="space-y-2">
                                 <label className="text-sm font-medium text-slate-300 ml-1">Tiempo de Entrega</label>
-                                <input
-                                    {...register("delivery_time")}
-                                    className="w-full bg-slate-900/50 border border-slate-700 rounded-xl px-4 py-3 text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 transition-all"
-                                    placeholder="Ej: 5 días hábiles, 2 semanas"
-                                />
+                                <input {...register("delivery_time")} className="w-full bg-slate-900/50 border border-slate-700 rounded-xl px-4 py-3 text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 transition-all" placeholder="Ej: 5 días hábiles, 2 semanas" />
                             </div>
                             <div className="space-y-2 md:col-span-2">
                                 <label className="text-sm font-medium text-slate-300 ml-1">Términos y Condiciones</label>
-                                <textarea
-                                    {...register("terms_conditions")}
-                                    className="w-full bg-slate-900/50 border border-slate-700 rounded-xl px-4 py-3 text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 transition-all min-h-[120px]"
-                                    placeholder="Ej: Precios en MXN, validez 30 días, pago 50% anticipo..."
-                                />
+                                <textarea {...register("terms_conditions")} className="w-full bg-slate-900/50 border border-slate-700 rounded-xl px-4 py-3 text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 transition-all min-h-[120px]" placeholder="Ej: Precios en MXN, validez 30 días, pago 50% anticipo..." />
                             </div>
                         </div>
                     </div>
 
-                    {/* Items Array */}
+                    {/* Partidas */}
                     <div className="bg-slate-800/40 p-6 rounded-3xl border border-slate-700/50 backdrop-blur-sm">
-                        <div className="flex justify-between items-center mb-6">
-                            <h2 className="text-lg font-semibold text-white">Products / Services</h2>
-                            <button
-                                type="button"
-                                onClick={() => append({ description: "", quantity: 1, unit_price: 0 })}
-                                className="flex items-center gap-2 text-sm text-emerald-400 hover:text-emerald-300 font-medium bg-emerald-500/10 hover:bg-emerald-500/20 px-4 py-2 rounded-lg transition-colors border border-emerald-500/20"
-                            >
-                                <Plus className="w-4 h-4" /> Add Line
-                            </button>
+                        <div className="flex flex-wrap justify-between items-center gap-3 mb-6">
+                            <h2 className="text-lg font-semibold text-white">Productos / Servicios</h2>
+                            <div className="flex items-center gap-3">
+                                <div className="flex items-center gap-2 bg-slate-900/50 border border-slate-700/50 rounded-lg px-3 py-1.5">
+                                    <Percent className="w-4 h-4 text-emerald-400" />
+                                    <span className="text-xs text-slate-400">Margen general</span>
+                                    <input type="number" inputMode="decimal" value={generalMargin} onChange={e => setGeneralMargin(Number(e.target.value))} className="w-16 bg-slate-900/60 border border-slate-700/50 rounded-md px-2 py-1 text-sm text-slate-200 text-right" />
+                                    <span className="text-xs text-slate-500">%</span>
+                                </div>
+                                <button type="button" onClick={() => append({ description: "", quantity: 1, margin_pct: "", cost_config: emptyLineCost() })} className="flex items-center gap-2 text-sm text-emerald-400 hover:text-emerald-300 font-medium bg-emerald-500/10 hover:bg-emerald-500/20 px-4 py-2 rounded-lg transition-colors border border-emerald-500/20">
+                                    <Plus className="w-4 h-4" /> Agregar partida
+                                </button>
+                            </div>
                         </div>
 
-                        <div className="space-y-4">
-                            {/* Desktop Headers */}
-                            <div className="hidden md:grid grid-cols-12 gap-4 text-xs font-semibold text-slate-400 uppercase tracking-wider px-2">
-                                <div className="col-span-6">Description</div>
-                                <div className="col-span-2">Quantity</div>
-                                <div className="col-span-3">Unit Price</div>
-                                <div className="col-span-1 text-center"></div>
-                            </div>
+                        <div className="hidden md:grid grid-cols-12 gap-3 text-xs font-semibold text-slate-400 uppercase tracking-wider px-2 mb-2">
+                            <div className="col-span-4">Descripción</div>
+                            <div className="col-span-1 text-center">Cant.</div>
+                            <div className="col-span-2 text-center">Costo</div>
+                            <div className="col-span-1 text-center">Margen</div>
+                            <div className="col-span-2 text-right">Precio venta u.</div>
+                            <div className="col-span-1 text-right">Total</div>
+                            <div className="col-span-1"></div>
+                        </div>
 
-                            {fields.map((field, index) => (
-                                <div key={field.id} className="grid grid-cols-1 md:grid-cols-12 gap-4 items-start bg-slate-900/30 p-4 md:p-2 rounded-xl border border-slate-700/30 md:border-none focus-within:bg-slate-800/60 transition-colors">
-                                    <div className="md:col-span-6 space-y-1">
-                                        <label className="md:hidden text-xs text-slate-400 ml-1">Description</label>
-                                        <input
-                                            {...register(`items.${index}.description` as const)}
-                                            className={cn(
-                                                "w-full bg-slate-900/80 border rounded-lg px-3 py-2 text-white placeholder-slate-600 focus:outline-none focus:ring-1 transition-all",
-                                                errors.items?.[index]?.description ? "border-red-500 focus:border-red-500 focus:ring-red-500" : "border-slate-700 focus:border-emerald-500 focus:ring-emerald-500"
-                                            )}
-                                            placeholder="Item description..."
-                                        />
-                                        {errors.items?.[index]?.description && <p className="text-red-400 text-xs ml-1">{errors.items[index]?.description?.message}</p>}
-                                    </div>
-
-                                    <div className="grid grid-cols-2 md:grid-cols-5 md:col-span-5 gap-4">
-                                        <div className="md:col-span-2 space-y-1">
-                                            <label className="md:hidden text-xs text-slate-400 ml-1">Quantity</label>
-                                            <input
-                                                type="number"
-                                                step="any"
-                                                {...register(`items.${index}.quantity` as const, { valueAsNumber: true })}
-                                                className={cn(
-                                                    "w-full bg-slate-900/80 border rounded-lg px-3 py-2 text-white focus:outline-none focus:ring-1 transition-all",
-                                                    errors.items?.[index]?.quantity ? "border-red-500 focus:border-red-500 focus:ring-red-500" : "border-slate-700 focus:border-emerald-500 focus:ring-emerald-500"
-                                                )}
-                                            />
-                                            {errors.items?.[index]?.quantity && <p className="text-red-400 text-xs ml-1">{errors.items[index]?.quantity?.message}</p>}
+                        <div className="space-y-3">
+                            {fields.map((field, index) => {
+                                const L = costing.lines[index];
+                                const cfg = (watchItems?.[index]?.cost_config as LineCostConfig) || null;
+                                const unitCost = lineDirectUnit(cfg);
+                                return (
+                                    <div key={field.id} className="grid grid-cols-1 md:grid-cols-12 gap-3 items-center bg-slate-900/30 p-4 md:p-2 rounded-xl border border-slate-700/30">
+                                        <div className="md:col-span-4">
+                                            <input {...register(`items.${index}.description` as const)} placeholder="Descripción de la pieza/servicio"
+                                                className={cn("w-full bg-slate-900/80 border rounded-lg px-3 py-2 text-white placeholder-slate-600 focus:outline-none focus:ring-1", errors.items?.[index]?.description ? "border-red-500 focus:ring-red-500" : "border-slate-700 focus:border-emerald-500 focus:ring-emerald-500")} />
                                         </div>
-
-                                        <div className="md:col-span-3 space-y-1">
-                                            <label className="md:hidden text-xs text-slate-400 ml-1">Unit Price ($)</label>
-                                            <input
-                                                type="number"
-                                                step="any"
-                                                {...register(`items.${index}.unit_price` as const, { valueAsNumber: true })}
-                                                className={cn(
-                                                    "w-full bg-slate-900/80 border rounded-lg px-3 py-2 text-white focus:outline-none focus:ring-1 transition-all",
-                                                    errors.items?.[index]?.unit_price ? "border-red-500 focus:border-red-500 focus:ring-red-500" : "border-slate-700 focus:border-emerald-500 focus:ring-emerald-500"
-                                                )}
-                                            />
-                                            {errors.items?.[index]?.unit_price && <p className="text-red-400 text-xs ml-1">{errors.items[index]?.unit_price?.message}</p>}
+                                        <div className="md:col-span-1">
+                                            <input type="number" step="any" {...register(`items.${index}.quantity` as const, { valueAsNumber: true })}
+                                                className="w-full bg-slate-900/80 border border-slate-700 rounded-lg px-2 py-2 text-white text-center focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500" />
+                                        </div>
+                                        <div className="md:col-span-2 flex justify-center">
+                                            <button type="button" onClick={() => setShowLineCost(index)}
+                                                className="w-full inline-flex items-center justify-center gap-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 px-2 py-2 rounded-lg text-xs border border-slate-700">
+                                                <Wrench className="w-3.5 h-3.5 text-emerald-400" /> {unitCost > 0 ? formatCurrency(unitCost) : "Configurar"}
+                                            </button>
+                                        </div>
+                                        <div className="md:col-span-1">
+                                            <div className="relative">
+                                                <input type="number" step="any" {...register(`items.${index}.margin_pct` as const)} placeholder={`${generalMargin}`}
+                                                    className="w-full bg-slate-900/80 border border-slate-700 rounded-lg px-2 py-2 text-white text-center text-sm focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500" title="Margen de esta partida (vacío = margen general)" />
+                                            </div>
+                                        </div>
+                                        <div className="md:col-span-2 text-right text-emerald-400 font-medium text-sm">{formatCurrency(L?.unitPrice ?? 0)}</div>
+                                        <div className="md:col-span-1 text-right text-white font-semibold text-sm">{formatCurrency(L?.saleTotal ?? 0)}</div>
+                                        <div className="md:col-span-1 flex items-center justify-end">
+                                            <button type="button" onClick={() => remove(index)} disabled={fields.length === 1}
+                                                className="text-slate-500 hover:text-red-400 disabled:opacity-30 transition-colors p-2 rounded-lg hover:bg-slate-800"><Trash2 className="w-5 h-5" /></button>
                                         </div>
                                     </div>
-
-                                    <div className="md:col-span-1 flex items-center justify-end md:justify-center md:h-[40px] pt-2 md:pt-0">
-                                        <button
-                                            type="button"
-                                            onClick={() => remove(index)}
-                                            disabled={fields.length === 1}
-                                            className="text-slate-500 hover:text-red-400 disabled:opacity-30 disabled:hover:text-slate-500 transition-colors p-2 rounded-lg hover:bg-slate-800"
-                                            title="Remove line"
-                                        >
-                                            <Trash2 className="w-5 h-5" />
-                                        </button>
-                                    </div>
-                                </div>
-                            ))}
+                                );
+                            })}
                         </div>
                     </div>
 
-                    {/* Overhead / Costos indirectos (interno) */}
+                    {/* Overhead */}
                     <div className="bg-slate-800/40 p-6 rounded-3xl border border-slate-700/50 backdrop-blur-sm">
                         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                             <div className="flex items-start gap-3">
                                 <div className="bg-amber-500/10 p-2.5 rounded-xl border border-amber-500/20"><Layers className="w-5 h-5 text-amber-400" /></div>
                                 <div>
-                                    <h2 className="text-lg font-semibold text-white">Costos indirectos (overhead)</h2>
-                                    <p className="text-slate-400 text-sm mt-0.5 max-w-xl">Opcional y de uso interno: renta, mano de obra, máquina, seguros, etc. Sirve para conocer tu costo real y margen. No se cobra al cliente ni aparece en el PDF.</p>
+                                    <h2 className="text-lg font-semibold text-white">Overhead (costos fijos)</h2>
+                                    <p className="text-slate-400 text-sm mt-0.5 max-w-xl">Renta, luz, agua, gasolina, contador, licencias… Se prorratea por la duración del proyecto y se reparte entre las partidas. Uso interno.</p>
                                 </div>
                             </div>
                             <div className="flex items-center gap-3 flex-shrink-0">
                                 {overheadConfig?.enabled && (
-                                    <div className="text-right">
-                                        <p className="text-xs text-slate-500">Overhead estimado</p>
-                                        <p className="text-lg font-bold text-amber-300">{formatCurrency(overheadInternal)}</p>
-                                    </div>
+                                    <div className="text-right"><p className="text-xs text-slate-500">Overhead</p><p className="text-lg font-bold text-amber-300">{formatCurrency(overheadInternal)}</p></div>
                                 )}
-                                <button
-                                    type="button"
-                                    onClick={() => setShowOverhead(true)}
-                                    className="inline-flex items-center gap-2 bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 px-5 py-2.5 rounded-xl font-medium text-sm border border-amber-500/25 whitespace-nowrap"
-                                >
+                                <button type="button" onClick={() => setShowOverhead(true)} className="inline-flex items-center gap-2 bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 px-5 py-2.5 rounded-xl font-medium text-sm border border-amber-500/25 whitespace-nowrap">
                                     <Settings2 className="w-4 h-4" /> {overheadConfig?.enabled ? "Editar overhead" : "Configurar overhead"}
                                 </button>
                             </div>
                         </div>
                         <div className="mt-4 pt-4 border-t border-slate-700/40">
-                            <Link href="/sales/overhead" className="text-xs text-slate-500 hover:text-amber-300">Editar catálogo global de costos →</Link>
+                            <Link href="/sales/overhead" className="text-xs text-slate-500 hover:text-amber-300">Editar catálogo global de costos fijos →</Link>
                         </div>
                     </div>
 
-                    {/* Totals & Submit */}
+                    {/* Totales & guardar */}
                     <div className="flex flex-col md:flex-row justify-between items-end gap-6 bg-slate-800/20 p-6 rounded-3xl border border-slate-700/30">
-                        <div className="w-full md:w-auto">
-                            <button
-                                type="submit"
-                                disabled={isSubmitting}
-                                className="w-full md:w-auto bg-emerald-500 hover:bg-emerald-600 disabled:bg-emerald-500/50 text-white px-10 py-4 rounded-xl font-bold transition-all shadow-[0_0_15px_rgba(16,185,129,0.2)] hover:shadow-[0_0_20px_rgba(16,185,129,0.4)] flex items-center justify-center gap-2 text-lg"
-                            >
-                                {isSubmitting ? (
-                                    <><RefreshCw className="w-5 h-5 animate-spin" /> Guardando...</>
-                                ) : (
-                                    <><Save className="w-5 h-5" /> {isEditing ? "Actualizar Cotización" : "Guardar Cotización"}</>
-                                )}
-                            </button>
-                        </div>
+                        <button type="submit" disabled={isSubmitting} className="w-full md:w-auto bg-emerald-500 hover:bg-emerald-600 disabled:bg-emerald-500/50 text-white px-10 py-4 rounded-xl font-bold transition-all shadow-[0_0_15px_rgba(16,185,129,0.2)] hover:shadow-[0_0_20px_rgba(16,185,129,0.4)] flex items-center justify-center gap-2 text-lg">
+                            {isSubmitting ? (<><RefreshCw className="w-5 h-5 animate-spin" /> Guardando...</>) : (<><Save className="w-5 h-5" /> {isEditing ? "Actualizar" : "Guardar Cotización"}</>)}
+                        </button>
 
-                        <div className="w-full md:w-72 space-y-3 bg-slate-900/50 p-6 rounded-2xl border border-slate-700/50">
+                        <div className="w-full md:w-80 space-y-3 bg-slate-900/50 p-6 rounded-2xl border border-slate-700/50">
                             <div className="flex justify-between items-center text-sm text-slate-400 font-medium">
-                                <span>Subtotal</span>
-                                <span>{formatCurrency(subtotal)}</span>
+                                <span>Subtotal (venta)</span><span>{formatCurrency(costing.subtotal)}</span>
                             </div>
                             <div className="flex justify-between items-center text-sm text-slate-400 font-medium pb-3 border-b border-slate-700/50">
-                                <span>IVA (16%)</span>
-                                <span>{formatCurrency(vatTotal)}</span>
+                                <span>IVA (16%)</span><span>{formatCurrency(costing.vat)}</span>
                             </div>
                             <div className="flex justify-between items-end text-lg text-white font-bold pt-1">
-                                <span>Total Neto</span>
-                                <span className="text-emerald-400">{formatCurrency(total)}</span>
+                                <span>Total</span><span className="text-emerald-400">{formatCurrency(costing.total)}</span>
                             </div>
 
-                            {overheadConfig?.enabled && (
-                                <div className="mt-3 pt-3 border-t border-dashed border-slate-700/50 space-y-2">
-                                    <div className="flex justify-between items-center text-xs text-amber-300/80 font-medium uppercase tracking-wide">
-                                        <span className="flex items-center gap-1"><Layers className="w-3.5 h-3.5" /> Interno</span>
-                                        <span>no se cobra</span>
-                                    </div>
-                                    <div className="flex justify-between items-center text-sm text-slate-400">
-                                        <span>Overhead</span>
-                                        <span className="text-amber-300 font-medium">{formatCurrency(overheadInternal)}</span>
-                                    </div>
-                                    <div className="flex justify-between items-center text-sm text-slate-400">
-                                        <span>Margen (subtotal − overhead)</span>
-                                        <span className={cn("font-medium", overheadMargin >= 0 ? "text-emerald-400" : "text-red-400")}>{formatCurrency(overheadMargin)}</span>
-                                    </div>
+                            <div className="mt-3 pt-3 border-t border-dashed border-slate-700/50 space-y-2">
+                                <div className="flex justify-between items-center text-xs text-amber-300/80 font-medium uppercase tracking-wide">
+                                    <span className="flex items-center gap-1"><Layers className="w-3.5 h-3.5" /> Interno</span><span>no se cobra</span>
                                 </div>
-                            )}
+                                <div className="flex justify-between items-center text-sm text-slate-400"><span>Costo total</span><span className="text-slate-200 font-medium">{formatCurrency(costing.costTotal)}</span></div>
+                                {overheadConfig?.enabled && <div className="flex justify-between items-center text-xs text-slate-500"><span>· incluye overhead</span><span>{formatCurrency(overheadInternal)}</span></div>}
+                                <div className="flex justify-between items-center text-sm text-slate-400">
+                                    <span>Ganancia</span>
+                                    <span className={cn("font-bold", costing.profit >= 0 ? "text-emerald-400" : "text-red-400")}>{formatCurrency(costing.profit)}{costing.subtotal > 0 ? ` (${((costing.profit / costing.subtotal) * 100).toFixed(0)}%)` : ""}</span>
+                                </div>
+                            </div>
                         </div>
                     </div>
-
                 </form>
+
+                {showLineCost !== null && (() => {
+                    const idx = showLineCost;
+                    return (
+                        <LineCostModal
+                            title={watchItems?.[idx]?.description || `Partida ${idx + 1}`}
+                            quantity={Number(watchItems?.[idx]?.quantity) || 0}
+                            config={(watchItems?.[idx]?.cost_config as LineCostConfig) ?? null}
+                            onClose={() => setShowLineCost(null)}
+                            onSave={(cfg) => { setValue(`items.${idx}.cost_config`, cfg, { shouldDirty: true }); setShowLineCost(null); }}
+                        />
+                    );
+                })()}
 
                 {showOverhead && (
                     <OverheadModal
-                        subtotal={subtotal}
+                        subtotal={costing.subtotal}
                         config={overheadConfig}
                         onClose={() => setShowOverhead(false)}
                         onSave={(cfg) => { setOverheadConfig(cfg); setShowOverhead(false); }}

@@ -2,13 +2,15 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabase";
-import { X, RefreshCw, Layers, CheckCircle, Info } from "lucide-react";
+import { X, RefreshCw, Layers, CheckCircle, Info, Plus, Trash2 } from "lucide-react";
 import clsx from "clsx";
 import { twMerge } from "tailwind-merge";
 import {
-    OverheadConfig, OverheadItem, PERIOD_LABELS, DURATION_UNIT_LABELS,
+    OverheadConfig, OverheadItem, OverheadPeriod, PERIOD_LABELS, DURATION_UNIT_LABELS,
     groupByCategory, itemContribution, overheadTotal, emptyOverheadConfig,
 } from "@/lib/overhead";
+
+const FIXED_PERIODS: OverheadPeriod[] = ["year", "month", "week", "day", "project"];
 
 function cn(...inputs: (string | undefined | null | false)[]) {
     return twMerge(clsx(inputs));
@@ -50,6 +52,12 @@ export default function OverheadModal({ subtotal, config, onClose, onSave }: Pro
     const patchItem = (idx: number, changes: Partial<OverheadItem>) =>
         setCfg(c => ({ ...c, items: c.items.map((it, i) => i === idx ? { ...it, ...changes } : it) }));
 
+    const addCustom = () =>
+        setCfg(c => ({ ...c, enabled: true, items: [...c.items, { category: "Otros costos fijos", name: "", amount: 0, period: "month", active: true }] }));
+
+    const removeItem = (idx: number) =>
+        setCfg(c => ({ ...c, items: c.items.filter((_, i) => i !== idx) }));
+
     // índice real dentro de cfg.items (los grupos reordenan)
     const indexOf = (it: OverheadItem) => cfg.items.indexOf(it);
 
@@ -84,14 +92,8 @@ export default function OverheadModal({ subtotal, config, onClose, onSave }: Pro
                             {(["week", "month", "day"] as const).map(u => <option key={u} value={u}>{DURATION_UNIT_LABELS[u]}</option>)}
                         </select>
                     </div>
-                    <div className="flex items-center gap-2">
-                        <span className="text-sm text-slate-400">Horas</span>
-                        <input type="number" inputMode="decimal" value={cfg.hours} onChange={e => setCfg(c => ({ ...c, hours: Number(e.target.value) }))} className="w-20 bg-slate-900/60 border border-slate-700/50 rounded-lg px-3 py-2 text-sm text-slate-200 text-right" title="Horas de trabajo/máquina del proyecto (para costos por hora)" />
-                    </div>
-                    <div className="flex items-center gap-2">
-                        <span className="text-sm text-slate-400">Piezas</span>
-                        <input type="number" inputMode="decimal" value={cfg.pieces} onChange={e => setCfg(c => ({ ...c, pieces: Number(e.target.value) }))} className="w-20 bg-slate-900/60 border border-slate-700/50 rounded-lg px-3 py-2 text-sm text-slate-200 text-right" title="Piezas del proyecto (para costos por pieza)" />
-                    </div>
+                    <span className="text-xs text-slate-500">El overhead se prorratea según la duración del proyecto.</span>
+                    <button onClick={addCustom} className="ml-auto inline-flex items-center gap-1.5 text-sm text-amber-400 hover:text-amber-300 bg-amber-500/10 px-3 py-2 rounded-lg border border-amber-500/20"><Plus className="w-4 h-4" /> Agregar costo fijo</button>
                 </div>
 
                 {/* Lista */}
@@ -113,13 +115,24 @@ export default function OverheadModal({ subtotal, config, onClose, onSave }: Pro
                                     return (
                                         <div key={idx} className={cn("flex flex-wrap items-center gap-2 rounded-lg px-3 py-2 border", it.active ? "bg-slate-800/40 border-slate-700/50" : "bg-slate-800/20 border-slate-800 opacity-60")}>
                                             <input type="checkbox" checked={it.active} onChange={e => patchItem(idx, { active: e.target.checked })} className="w-4 h-4 accent-amber-500 flex-shrink-0" />
-                                            <span className="flex-1 min-w-[160px] text-sm text-slate-200">{it.name}</span>
+                                            {it.id ? (
+                                                <span className="flex-1 min-w-[160px] text-sm text-slate-200">{it.name}</span>
+                                            ) : (
+                                                <input value={it.name} onChange={e => patchItem(idx, { name: e.target.value })} placeholder="Nombre del costo" className="flex-1 min-w-[160px] bg-slate-900/60 border border-slate-700/50 rounded-lg px-2 py-1.5 text-sm text-slate-200" />
+                                            )}
                                             <div className="flex items-center gap-1">
                                                 <span className="text-slate-500 text-sm">$</span>
                                                 <input type="number" inputMode="decimal" value={it.amount} onChange={e => patchItem(idx, { amount: Number(e.target.value) })} className="w-24 bg-slate-900/60 border border-slate-700/50 rounded-lg px-2 py-1.5 text-sm text-slate-200 text-right" />
                                             </div>
-                                            <span className="text-xs text-slate-500 w-20">{PERIOD_LABELS[it.period]}</span>
+                                            {it.id ? (
+                                                <span className="text-xs text-slate-500 w-20">{PERIOD_LABELS[it.period]}</span>
+                                            ) : (
+                                                <select value={it.period} onChange={e => patchItem(idx, { period: e.target.value as any })} className="w-24 bg-slate-900/60 border border-slate-700/50 rounded-lg px-1 py-1.5 text-xs text-slate-200">
+                                                    {FIXED_PERIODS.map(p => <option key={p} value={p}>{PERIOD_LABELS[p]}</option>)}
+                                                </select>
+                                            )}
                                             <span className="text-sm font-medium text-amber-300 w-24 text-right">{fmt(contrib)}</span>
+                                            {!it.id && <button onClick={() => removeItem(idx)} className="text-slate-600 hover:text-red-400 p-1"><Trash2 className="w-3.5 h-3.5" /></button>}
                                         </div>
                                     );
                                 })}
@@ -135,7 +148,7 @@ export default function OverheadModal({ subtotal, config, onClose, onSave }: Pro
                         <span className="text-slate-400">Subtotal cotización: <span className="text-slate-200 font-medium">{fmt(subtotal)}</span></span>
                         <span className="text-slate-400">Margen vs overhead: <span className={cn("font-bold", margen >= 0 ? "text-emerald-300" : "text-red-300")}>{fmt(margen)} ({margenPct.toFixed(0)}%)</span></span>
                     </div>
-                    <p className="text-[11px] text-slate-500 flex items-center gap-1.5"><Info className="w-3.5 h-3.5" /> Los costos por año/mes/semana/día se prorratean a la duración; los de por hora/pieza se multiplican por horas/piezas.</p>
+                    <p className="text-[11px] text-slate-500 flex items-center gap-1.5"><Info className="w-3.5 h-3.5" /> Los costos fijos (año/mes/semana/día) se prorratean a la duración del proyecto. La mano de obra, maquinado y consumibles se configuran en cada línea.</p>
                     <div className="flex justify-end gap-3">
                         <button onClick={onClose} className="px-5 py-2.5 rounded-xl text-sm font-medium text-slate-300 bg-slate-800 hover:bg-slate-700 border border-slate-700">Cancelar</button>
                         <button onClick={save} className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-medium text-white bg-amber-500 hover:bg-amber-600"><CheckCircle className="w-4 h-4" /> Aplicar a la cotización</button>
