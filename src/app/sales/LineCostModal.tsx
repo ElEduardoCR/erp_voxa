@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { X, Plus, Trash2, CheckCircle, Wrench } from "lucide-react";
 import clsx from "clsx";
 import { twMerge } from "tailwind-merge";
-import { LineCostConfig, emptyLineCost, lineDirectUnit } from "@/lib/quoteCosting";
+import { LineCostConfig, emptyLineCost, lineDirectUnit, machiningMinutesOf } from "@/lib/quoteCosting";
 
 function cn(...inputs: (string | undefined | null | false)[]) {
     return twMerge(clsx(inputs));
@@ -21,7 +21,9 @@ type Props = {
 };
 
 export default function LineCostModal({ title, quantity, config, onClose, onSave }: Props) {
-    const [c, setC] = useState<LineCostConfig>(config ? { ...emptyLineCost(), ...config, extras: config.extras || [] } : emptyLineCost());
+    const [c, setC] = useState<LineCostConfig>(config
+        ? { ...emptyLineCost(), ...config, machiningMinutes: machiningMinutesOf(config), extras: config.extras || [] }
+        : emptyLineCost());
 
     useEffect(() => {
         const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
@@ -35,7 +37,7 @@ export default function LineCostModal({ title, quantity, config, onClose, onSave
     const addExtra = () => setC(p => ({ ...p, extras: [...p.extras, { label: "", amount: 0 }] }));
     const removeExtra = (i: number) => setC(p => ({ ...p, extras: p.extras.filter((_, ix) => ix !== i) }));
 
-    const machiningCost = (Number(c.machiningHours) || 0) * (Number(c.machiningRate) || 0);
+    const machiningCost = ((Number(c.machiningMinutes) || 0) / 60) * (Number(c.machiningRate) || 0);
     const unit = lineDirectUnit(c);
     const qty = Number(quantity) || 0;
 
@@ -61,13 +63,13 @@ export default function LineCostModal({ title, quantity, config, onClose, onSave
                     <Row label="Maquinado">
                         <div className="flex items-center gap-2 flex-wrap justify-end">
                             <div className="flex items-center gap-1">
-                                <input type="number" inputMode="decimal" value={c.machiningHours} onChange={e => set("machiningHours", Number(e.target.value))} className="w-20 bg-slate-900/60 border border-slate-700/50 rounded-lg px-3 py-2 text-sm text-slate-200 text-right" />
-                                <span className="text-xs text-slate-500">hrs</span>
+                                <input type="number" inputMode="decimal" value={c.machiningMinutes} onChange={e => set("machiningMinutes", Number(e.target.value))} className="w-20 bg-slate-900/60 border border-slate-700/50 rounded-lg px-3 py-2 text-sm text-slate-200 text-right" />
+                                <span className="text-xs text-slate-500">min</span>
                             </div>
                             <span className="text-slate-600">×</span>
                             <div className="flex items-center gap-1">
                                 <span className="text-slate-500 text-sm">$</span>
-                                <input type="number" inputMode="decimal" value={c.machiningRate} onChange={e => set("machiningRate", Number(e.target.value))} className="w-20 bg-slate-900/60 border border-slate-700/50 rounded-lg px-3 py-2 text-sm text-slate-200 text-right" />
+                                <input type="number" inputMode="decimal" value={c.machiningRate} onChange={e => set("machiningRate", Number(e.target.value))} className="w-24 bg-slate-900/60 border border-slate-700/50 rounded-lg px-3 py-2 text-sm text-slate-200 text-right" />
                                 <span className="text-xs text-slate-500">/hr</span>
                             </div>
                             <span className="text-sm font-medium text-emerald-300 w-24 text-right">{fmt(machiningCost)}</span>

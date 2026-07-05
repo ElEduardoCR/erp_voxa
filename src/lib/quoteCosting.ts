@@ -3,25 +3,36 @@
 
 export type LineExtra = { label: string; amount: number };
 
+export const DEFAULT_MACHINE_RATE = 1200; // $/hr estándar (editable por línea)
+
 export type LineCostConfig = {
-    material: number;         // costo de material (por pieza)
-    machiningHours: number;   // horas de maquinado (por pieza)
-    machiningRate: number;    // tarifa de máquina ($/hr)
-    consumables: number;      // consumibles (por pieza)
-    labor: number;            // mano de obra (por pieza)
-    extras: LineExtra[];      // costos extra (por pieza)
+    material: number;          // costo de material (por pieza)
+    machiningMinutes: number;  // minutos de maquinado (por pieza)
+    machiningRate: number;     // tarifa de máquina ($/hr)
+    consumables: number;       // consumibles (por pieza)
+    labor: number;             // mano de obra (por pieza)
+    extras: LineExtra[];       // costos extra (por pieza)
 };
 
 export const emptyLineCost = (): LineCostConfig => ({
-    material: 0, machiningHours: 0, machiningRate: 0, consumables: 0, labor: 0, extras: [],
+    material: 0, machiningMinutes: 0, machiningRate: DEFAULT_MACHINE_RATE, consumables: 0, labor: 0, extras: [],
 });
 
-// Costo directo de UNA pieza según su configuración
+// Minutos de maquinado (acepta el formato anterior en horas por compatibilidad)
+export function machiningMinutesOf(c: any): number {
+    if (!c) return 0;
+    if (c.machiningMinutes != null) return Number(c.machiningMinutes) || 0;
+    if (c.machiningHours != null) return (Number(c.machiningHours) || 0) * 60;
+    return 0;
+}
+
+// Costo directo de UNA pieza según su configuración. El maquinado es minutos × (tarifa/hr ÷ 60).
 export function lineDirectUnit(c?: LineCostConfig | null): number {
     if (!c) return 0;
     const extras = (c.extras || []).reduce((a, e) => a + (Number(e.amount) || 0), 0);
+    const machining = (machiningMinutesOf(c) / 60) * (Number(c.machiningRate) || 0);
     return (Number(c.material) || 0)
-        + (Number(c.machiningHours) || 0) * (Number(c.machiningRate) || 0)
+        + machining
         + (Number(c.consumables) || 0)
         + (Number(c.labor) || 0)
         + extras;
