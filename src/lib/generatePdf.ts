@@ -36,8 +36,12 @@ export const generateQuotationPDF = async (data: QuotationData) => {
     const doc = new jsPDF();
     const pageWidth = doc.internal.pageSize.getWidth();
 
-    // Helper for currency formatting
-    const formatCurrency = (amt: number) => `$ ${amt.toFixed(2)}`;
+    // Brand accent color #014495
+    const BRAND: [number, number, number] = [1, 68, 149];
+
+    // Helper for currency formatting: thousands separated by commas, 2 decimals
+    const formatCurrency = (amt: number) =>
+        `$ ${amt.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
     // --- Header Section ---
 
@@ -74,14 +78,14 @@ export const generateQuotationPDF = async (data: QuotationData) => {
             // Default to text if image fails
             doc.setFont("helvetica", "bold");
             doc.setFontSize(24);
-            doc.setTextColor(79, 70, 229);
+            doc.setTextColor(BRAND[0], BRAND[1], BRAND[2]);
             doc.text(data.company?.company_name || "VOXA", 14, currentY);
             currentY += 6;
         }
     } else {
         doc.setFont("helvetica", "bold");
         doc.setFontSize(24);
-        doc.setTextColor(79, 70, 229);
+        doc.setTextColor(BRAND[0], BRAND[1], BRAND[2]);
         doc.text(data.company?.company_name || "VOXA", 14, currentY);
         currentY += 6;
     }
@@ -167,7 +171,7 @@ export const generateQuotationPDF = async (data: QuotationData) => {
     // --- Items Table ---
     const tableData = data.items.map(item => [
         item.description,
-        item.quantity.toString(),
+        item.quantity.toLocaleString('en-US'),
         formatCurrency(item.unit_price),
         formatCurrency(item.line_total)
     ]);
@@ -178,7 +182,7 @@ export const generateQuotationPDF = async (data: QuotationData) => {
         body: tableData,
         theme: 'striped',
         headStyles: {
-            fillColor: [79, 70, 229],
+            fillColor: BRAND,
             textColor: 255,
             fontStyle: 'bold',
         },
@@ -191,6 +195,7 @@ export const generateQuotationPDF = async (data: QuotationData) => {
         styles: {
             fontSize: 9,
             cellPadding: 4,
+            textColor: [0, 0, 0],
         }
     });
 
@@ -202,13 +207,13 @@ export const generateQuotationPDF = async (data: QuotationData) => {
     doc.setFont("helvetica", "normal");
     doc.setTextColor(100, 116, 139);
     doc.text("Subtotal:", totalsX, finalY);
-    doc.setTextColor(15, 23, 42);
+    doc.setTextColor(0, 0, 0);
     doc.text(formatCurrency(data.subtotal), pageWidth - 14, finalY, { align: "right" });
 
     // IVA
     doc.setTextColor(100, 116, 139);
     doc.text("IVA (16%):", totalsX, finalY + 7);
-    doc.setTextColor(15, 23, 42);
+    doc.setTextColor(0, 0, 0);
     doc.text(formatCurrency(data.vat_total), pageWidth - 14, finalY + 7, { align: "right" });
 
     // Total Line
@@ -220,7 +225,7 @@ export const generateQuotationPDF = async (data: QuotationData) => {
     doc.setFont("helvetica", "bold");
     doc.setFontSize(12);
     doc.text("Total Neto:", totalsX, finalY + 18);
-    doc.setTextColor(16, 185, 129); // Emerald 500
+    doc.setTextColor(0, 0, 0); // Black (numbers stay black — green fades on white)
     doc.text(formatCurrency(data.total), pageWidth - 14, finalY + 18, { align: "right" });
 
     // --- Terms & Conditions ---
