@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabase";
 import {
     ArrowLeft, BarChart3, RefreshCw, TrendingUp, Calendar, ShoppingCart,
-    Coins, Wallet, Receipt, ExternalLink, Link2, FileSpreadsheet, Check, RotateCcw,
+    Coins, Wallet, Receipt, ExternalLink, Link2, FileSpreadsheet, Check,
 } from "lucide-react";
 import Link from "next/link";
 import clsx from "clsx";
@@ -297,12 +297,6 @@ export default function DashboardPage() {
         }
         const pendingList = Array.from(perQuote.values()).sort((a, b) => b.pendingAmount - a.pendingAmount);
 
-        // Cotizaciones marcadas manualmente como ya facturadas (para deshacer)
-        const manualList = approvedQuotes
-            .filter(q => manuallyBilledIds.has(q.id))
-            .map(q => ({ id: q.id, number: q.quotation_number, client: q.client_name, total: Number(q.total) || 0 }))
-            .sort((a, b) => b.total - a.total);
-
         const inYear = (iso: string) => {
             const d = new Date(iso);
             return !isNaN(d.getTime()) && d.getFullYear() === BILLING_YEAR;
@@ -314,7 +308,6 @@ export default function DashboardPage() {
             porFacturar,
             facturado,
             pendingList,
-            manualList,
             approvedCount: approvedQuotes.length,
             porCobrarYear,
             porCobrarYearCount: unpaid.length,
@@ -672,31 +665,6 @@ export default function DashboardPage() {
                         </div>
                     )}
 
-                    {/* Marcadas manualmente como facturadas (deshacer) */}
-                    {facturacion.manualList.length > 0 && (
-                        <div className="bg-slate-800/30 border border-slate-700/40 rounded-2xl p-4">
-                            <p className="text-xs text-slate-400 uppercase tracking-wide font-semibold mb-3 flex items-center gap-2">
-                                <Check className="w-3.5 h-3.5 text-emerald-400" /> Marcadas manualmente como facturadas ({facturacion.manualList.length})
-                            </p>
-                            <div className="flex flex-wrap gap-2">
-                                {facturacion.manualList.map(q => (
-                                    <span key={q.id} className="inline-flex items-center gap-2 bg-slate-900/50 border border-slate-700/50 rounded-lg pl-3 pr-1.5 py-1.5 text-xs">
-                                        <button onClick={() => setSelectedQuote({ id: q.id, number: q.number, client: q.client })} className="font-mono text-emerald-300 hover:text-emerald-200 hover:underline" title="Ver partidas">{q.number}</button>
-                                        <span className="text-slate-400 max-w-[160px] truncate">{q.client || "—"}</span>
-                                        <span className="text-slate-300 font-medium">{fmtMoney(q.total)}</span>
-                                        <button
-                                            onClick={() => markBilled(q.id, false)}
-                                            disabled={markingId === q.id}
-                                            title="Deshacer: volver a contar como 'por facturar'"
-                                            className="inline-flex items-center gap-1 text-slate-400 hover:text-white bg-slate-800 hover:bg-slate-700 px-2 py-1 rounded-md border border-slate-700 disabled:opacity-50"
-                                        >
-                                            {markingId === q.id ? <RefreshCw className="w-3 h-3 animate-spin" /> : <RotateCcw className="w-3 h-3" />} Deshacer
-                                        </button>
-                                    </span>
-                                ))}
-                            </div>
-                        </div>
-                    )}
                 </section>
 
                 {/* Cuentas por cobrar */}
