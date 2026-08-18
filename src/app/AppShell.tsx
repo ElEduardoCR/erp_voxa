@@ -9,9 +9,7 @@ import {
   ChevronRight,
   CircleDollarSign,
   Factory,
-  FileCheck2,
   FileInput,
-  HeartPulse,
   Layers3,
   LogOut,
   Menu,
@@ -54,7 +52,6 @@ const navigation: NavigationGroup[] = [
     label: "Bandejas",
     items: [
       { label: "Facturas de compra", href: "/purchases/inbox", icon: FileInput },
-      { label: "Facturación de ventas", href: "/sales/billing-inbox", icon: FileCheck2 },
     ],
   },
   {
@@ -67,7 +64,6 @@ const navigation: NavigationGroup[] = [
   {
     label: "Finanzas",
     items: [
-      { label: "Salud financiera", href: "/finance", icon: HeartPulse },
       { label: "Facturas emitidas", href: "/issued-invoices", icon: CircleDollarSign },
       { label: "Costos fijos", href: "/sales/overhead", icon: Layers3 },
     ],
